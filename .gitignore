@@ -1,0 +1,23 @@
+/target/
+/node_modules/
+/.idea/
+/.vscode/
+
+# Tauri
+/tauri-app/src-tauri/target/
+/tauri-app/dist/
+/tauri-app/node_modules/
+
+# Android
+/android-app/.gradle/
+/android-app/build/
+/android-app/app/build/
+*.apk
+*.aab
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+*.swp
+
+.codegraph/
