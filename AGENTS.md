@@ -92,6 +92,12 @@ Refs: ROADMAP OPDS 书源服务构建与分发
 
 ## 核心库(core)开发规范
 
+- `core/src/lib.rs` 只作为 crate 入口,负责声明模块与 re-export 公开 API;具体实现按职责拆到独立模块文件中。当前约定:
+  - `protocol.rs`: ID、消息结构、序列化辅助、时间戳辅助。
+  - `frame.rs`: "4字节长度前缀 + JSON消息体"帧读写与帧错误。
+  - `session.rs`: 会话、连接、路由、成员状态、Relay/Leaf 行为。
+  - `session/tests.rs`: core 单元测试,可访问会话内部状态验证隔离与路由行为。
+- 新增 core 代码时优先放入已有职责模块;只有出现稳定的新职责边界时才新增模块,避免把实现重新堆回 `lib.rs`。
 - 异步运行时统一使用 `tokio`,禁止引入其他异步运行时(如 async-std)造成运行时冲突。
 - 所有消息结构体通过 `serde` 派生 `Serialize`/`Deserialize`,消息类型区分使用 `#[serde(tag = "type")]` 内部标签,不使用外部标签或数字枚举。
 - 网络字节序列使用"4字节长度前缀 + JSON消息体"的帧格式,长度前缀统一大端序,读写工具函数放在同一模块,不要在多处重复实现。
