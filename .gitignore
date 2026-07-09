@@ -5,6 +5,7 @@
 
 # Tauri
 /tauri-app/src-tauri/target/
+/tauri-app/src-tauri/gen/
 /tauri-app/dist/
 /tauri-app/node_modules/
 
