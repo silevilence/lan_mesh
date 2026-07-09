@@ -52,6 +52,11 @@
         color: #526071;
       }
 
+      button.mini {
+        margin-top: 8px;
+        padding: 6px 10px;
+      }
+
       input,
       select {
         width: 100%;
@@ -165,6 +170,11 @@
 
       .item.clickable:hover {
         border-color: #1f5eff;
+      }
+
+      .item.disabled {
+        cursor: not-allowed;
+        opacity: 0.58;
       }
 
       .item.active {
@@ -395,17 +405,17 @@
 
         <div id="messages" class="messages"></div>
 
-        <form id="send-text" class="composer">
+        <form id="send-text" class="composer" autocomplete="off">
           <div class="send-row">
-            <input id="message-input" placeholder="输入文本消息" required />
+            <input id="message-input" placeholder="输入文本消息" autocomplete="off" spellcheck="false" required />
             <button type="submit">发送</button>
           </div>
         </form>
 
-        <form id="send-file" class="composer">
+        <form id="send-file" class="composer" autocomplete="off">
           <div class="file-row">
-            <input id="file-input" type="file" />
-            <input id="file-path" placeholder="文件绝对路径（必要时手动填写）" />
+            <button id="pick-file" type="button" class="secondary">选择文件</button>
+            <input id="file-path" placeholder="文件绝对路径（也可手动填写）" autocomplete="off" spellcheck="false" />
             <button type="submit">发文件</button>
           </div>
         </form>
@@ -418,7 +428,7 @@
     </main>
 
     <dialog id="create-dialog">
-      <form id="create-group" class="modal">
+      <form id="create-group" class="modal" autocomplete="off">
         <div class="modal-head">
           <h1>新建群组</h1>
           <button id="close-create" type="button" class="ghost">关闭</button>
@@ -433,11 +443,11 @@
         </label>
         <label>
           手动绑定地址
-          <input id="create-bind" placeholder="0.0.0.0:0" />
+          <input id="create-bind" placeholder="0.0.0.0:0" autocomplete="off" spellcheck="false" />
         </label>
         <label>
           群组名称
-          <input id="group-name" placeholder="我的 LAN Mesh" />
+          <input id="group-name" placeholder="我的 LAN Mesh" autocomplete="off" spellcheck="false" />
         </label>
         <div id="network-interfaces" class="list"></div>
         <button type="submit">创建并进入群组</button>
@@ -451,7 +461,7 @@
           <button id="close-join" type="button" class="ghost">关闭</button>
         </div>
 
-        <form id="discover-form" class="row">
+        <form id="discover-form" class="row" autocomplete="off">
           <label>
             发现监听地址
             <select id="discover-bind">
@@ -466,7 +476,7 @@
         </form>
         <div id="relays" class="list"></div>
 
-        <form id="manual-join" class="modal">
+        <form id="manual-join" class="modal" autocomplete="off">
           <label>
             发起连接网卡
             <select id="join-interface">
@@ -475,15 +485,15 @@
           </label>
           <label>
             Group ID
-            <input id="manual-group-id" required />
+            <input id="manual-group-id" autocomplete="off" spellcheck="false" required />
           </label>
           <label>
             Relay IP/端口
-            <input id="manual-relay-addr" placeholder="192.168.1.10:9000" required />
+            <input id="manual-relay-addr" placeholder="192.168.1.10:9000" autocomplete="off" spellcheck="false" required />
           </label>
           <label>
             本地 IP（可选）
-            <input id="manual-local-ip" placeholder="192.168.1.20" />
+            <input id="manual-local-ip" placeholder="192.168.1.20" autocomplete="off" spellcheck="false" />
           </label>
           <button type="submit">加入并进入群组</button>
         </form>

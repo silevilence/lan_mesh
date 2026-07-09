@@ -5,7 +5,7 @@ use crate::{
         duration_ms, err_string, id, parse_device_id, parse_file_id, parse_group_id,
         parse_optional_ip, parse_or_new_device_id, parse_or_new_group_id, role_name,
     },
-    network::{advertised_addr, network_interfaces, parse_socket_addr},
+    network::{announcement_targets, network_interfaces, parse_socket_addr},
     state::{AppState, ClientSession, SentFile, current_session, install_session},
     views::{
         ConnectionStatus, MemberView, NeighborView, NetworkInterfaceView, RelayAnnouncementView,
@@ -17,7 +17,7 @@ use lan_mesh_core::{
     DeviceId, DeviceRole, FileChunkReader, FileId, FileResumeRequestPayload, GroupId,
     MessageTarget, Session, file_resume_request_message,
 };
-use std::{net::SocketAddr, time::Duration};
+use std::{net::SocketAddr, path::Path, process::Command, time::Duration};
 use tauri::{AppHandle, Emitter, State};
 
 #[tauri::command]
@@ -35,18 +35,31 @@ pub(crate) async fn create_group(
     let (session, local_addr) = Session::create_group(device_id, group_id, bind_addr)
         .await
         .map_err(err_string)?;
-    session
-        .start_relay_announcement(
-            SocketAddr::from(([0, 0, 0, 0], 0)),
-            SocketAddr::from(([255, 255, 255, 255], DISCOVERY_PORT)),
-            advertised_addr(local_addr),
-            group_name
-                .filter(|value| !value.trim().is_empty())
-                .unwrap_or_else(|| "LAN Mesh".to_string()),
-            Duration::from_secs(2),
-        )
-        .await
-        .map_err(err_string)?;
+    let group_name = group_name
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "LAN Mesh".to_string());
+    let mut started = false;
+    let mut last_err = None;
+    for (announce_bind, tcp_addr) in announcement_targets(local_addr) {
+        match session
+            .start_relay_announcement(
+                announce_bind,
+                SocketAddr::from(([255, 255, 255, 255], DISCOVERY_PORT)),
+                tcp_addr,
+                group_name.clone(),
+                Duration::from_secs(2),
+            )
+            .await
+        {
+            Ok(_) => started = true,
+            Err(err) => last_err = Some(err),
+        }
+    }
+    if !started {
+        return Err(last_err
+            .map(err_string)
+            .unwrap_or_else(|| "failed to start relay announcement".to_string()));
+    }
 
     install_session(&app, &state, ClientSession { session, group_id }).await;
 
@@ -117,6 +130,7 @@ pub(crate) async fn close_session(state: State<'_, AppState>) -> Result<(), Stri
         client.session.destroy().await;
     }
     state.sent_files.lock().await.clear();
+    state.received_files.lock().await.clear();
     Ok(())
 }
 
@@ -180,6 +194,10 @@ pub(crate) async fn send_file(
     .map_err(err_string)?;
     let chunk_count = reader.chunk_count();
     let total_size = reader.total_size();
+    let file_name = Path::new(&path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.to_string());
     let mut done_chunks = 0;
     state.sent_files.lock().await.insert(
         file_id,
@@ -201,11 +219,21 @@ pub(crate) async fn send_file(
             "mesh://transfer-progress",
             TransferProgressEvent {
                 file_id: id(file_id.0),
+                file_name: file_name.clone(),
                 direction: "outgoing",
                 chunk_index,
                 chunk_count,
                 done_chunks,
                 total_size,
+                status: if done_chunks >= chunk_count {
+                    "done"
+                } else {
+                    "running"
+                },
+                path: None,
+                error: None,
+                from: None,
+                target_device_id: None,
             },
         );
     }
@@ -328,4 +356,81 @@ pub(crate) async fn get_connection_status(
 #[tauri::command]
 pub(crate) fn list_network_interfaces() -> Vec<NetworkInterfaceView> {
     network_interfaces()
+}
+
+#[tauri::command]
+pub(crate) async fn pick_file() -> Result<String, String> {
+    tokio::task::spawn_blocking(|| {
+        #[cfg(target_os = "windows")]
+        {
+            let script = r#"Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.OpenFileDialog; if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $d.FileName }"#;
+            let output = Command::new("powershell")
+                .args(["-NoProfile", "-STA", "-Command", script])
+                .output()
+                .map_err(err_string)?;
+            if !output.status.success() {
+                return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+            }
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if path.is_empty() {
+                Err("未选择文件".to_string())
+            } else {
+                Ok(path)
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            Err("当前平台未实现文件选择，请手动填写绝对路径".to_string())
+        }
+    })
+    .await
+    .map_err(err_string)?
+}
+
+#[tauri::command]
+pub(crate) async fn save_file_as(
+    path: String,
+    file_name: Option<String>,
+) -> Result<String, String> {
+    let destination = pick_save_path(file_name.unwrap_or_else(|| {
+        Path::new(&path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("received-file")
+            .to_string()
+    }))
+    .await?;
+    tokio::fs::copy(&path, &destination)
+        .await
+        .map_err(err_string)?;
+    Ok(destination)
+}
+
+async fn pick_save_path(file_name: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        #[cfg(target_os = "windows")]
+        {
+            let script = r#"Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.SaveFileDialog; $d.FileName = [Environment]::GetEnvironmentVariable('LAN_MESH_FILE_NAME'); if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $d.FileName }"#;
+            let output = Command::new("powershell")
+                .env("LAN_MESH_FILE_NAME", file_name)
+                .args(["-NoProfile", "-STA", "-Command", script])
+                .output()
+                .map_err(err_string)?;
+            if !output.status.success() {
+                return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+            }
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if path.is_empty() {
+                Err("未选择保存位置".to_string())
+            } else {
+                Ok(path)
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            Err("当前平台未实现另存为".to_string())
+        }
+    })
+    .await
+    .map_err(err_string)?
 }

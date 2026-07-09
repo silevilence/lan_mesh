@@ -82,11 +82,17 @@ pub(crate) struct MemberEvent {
 #[derive(Clone, Serialize)]
 pub(crate) struct TransferProgressEvent {
     pub(crate) file_id: String,
+    pub(crate) file_name: Option<String>,
     pub(crate) direction: &'static str,
     pub(crate) chunk_index: u32,
     pub(crate) chunk_count: u32,
     pub(crate) done_chunks: u32,
     pub(crate) total_size: u64,
+    pub(crate) status: &'static str,
+    pub(crate) path: Option<String>,
+    pub(crate) error: Option<String>,
+    pub(crate) from: Option<String>,
+    pub(crate) target_device_id: Option<String>,
 }
 
 #[derive(Serialize)]

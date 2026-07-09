@@ -24,6 +24,8 @@ pub fn run() {
             commands::get_members,
             commands::get_connection_status,
             commands::list_network_interfaces,
+            commands::pick_file,
+            commands::save_file_as,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run LAN Mesh Tauri app");

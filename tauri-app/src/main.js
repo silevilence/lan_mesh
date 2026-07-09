@@ -2,6 +2,10 @@ const tauri = window.__TAURI__;
 const invoke = tauri?.core?.invoke ?? tauri?.invoke;
 const listen = tauri?.event?.listen;
 
+document.querySelectorAll("form,input").forEach((node) => {
+  node.autocomplete = "off";
+});
+
 const state = {
   session: null,
   selected: null,
@@ -90,6 +94,10 @@ function clearSession() {
   state.transfers.clear();
   setStatus("未连接");
   renderAll();
+}
+
+function forgetRelayGroup(groupId) {
+  state.relays = state.relays.filter((relay) => relay.group_id !== groupId);
 }
 
 function renderAll() {
@@ -229,6 +237,14 @@ function renderMessages() {
     meta.className = "muted";
     meta.textContent = `${item.mine ? "我" : short(item.from)} · ${new Date(item.at).toLocaleTimeString()} · ${item.status}`;
     node.append(content, meta);
+    if (item.kind === "file" && item.path && !item.mine) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "secondary mini";
+      button.textContent = "另存为";
+      button.addEventListener("click", () => saveReceivedFile(item));
+      node.append(button);
+    }
     messages.append(node);
   }
   messages.scrollTop = messages.scrollHeight;
@@ -236,6 +252,7 @@ function renderMessages() {
 
 function addIncoming(message) {
   if (!message || !state.session) return;
+  if (message.type !== "text") return;
   const source = sourceOf(message);
   const target = targetOf(message);
   const payload = payloadOf(message);
@@ -271,24 +288,35 @@ async function refreshMembers() {
 function renderRelays(items) {
   const relays = $("relays");
   relays.innerHTML = "";
-  if (!items.length) {
+  const visibleItems = items.filter((relay) => relayState(relay) !== "own");
+  if (!visibleItems.length) {
     relays.append(emptyItem("未发现 Relay，可手动填写。"));
     return;
   }
-  for (const relay of items) {
+  for (const relay of visibleItems) {
+    const state = relayState(relay);
     const node = document.createElement("button");
     node.type = "button";
-    node.className = "item clickable";
+    node.disabled = state === "joined";
+    node.className = `item ${state === "joined" ? "disabled" : "clickable"}`;
     node.innerHTML = `
       <div class="item-head">
         <span class="title">${relay.group_name || "LAN Mesh"}</span>
-        <span class="badge">填入</span>
+        <span class="badge">${state === "joined" ? "已加入" : "填入"}</span>
       </div>
       <div class="muted">${relay.group_id}<br />${relay.tcp_addr}</div>
     `;
-    node.addEventListener("click", () => fillJoinForm(relay));
+    if (state !== "joined") node.addEventListener("click", () => fillJoinForm(relay));
     relays.append(node);
   }
+}
+
+function relayState(relay) {
+  if (!state.session) return "available";
+  if (relay.device_id === state.session.device_id || (relay.group_id === state.session.group_id && state.session.role === "relay")) {
+    return "own";
+  }
+  return relay.group_id === state.session.group_id ? "joined" : "available";
 }
 
 function fillJoinForm(relay) {
@@ -343,8 +371,10 @@ async function join(groupId, relayAddr, localIp = "") {
 async function closeCurrentSession() {
   if (!state.session) return;
   const action = state.session.role === "relay" ? "解散群组" : "退出群组";
+  const groupId = state.session.group_id;
   if (!confirm(`${action}后会断开当前会话，继续？`)) return;
   await call("close_session");
+  forgetRelayGroup(groupId);
   clearSession();
 }
 
@@ -378,15 +408,50 @@ function rememberTransfer(payload) {
   const chunks = old.chunks || new Set();
   chunks.add(payload.chunk_index);
   const done_chunks = chunks.size;
+  const status = payload.status || (done_chunks >= payload.chunk_count ? "done" : "running");
   state.transfers.set(payload.file_id, {
     ...old,
     ...payload,
     chunks,
     done_chunks,
     updatedAt: now,
-    status: done_chunks >= payload.chunk_count ? "done" : "running",
+    status,
+    announced: old.announced || (payload.direction === "incoming" && status === "done" && payload.path),
   });
+  if (payload.direction === "incoming" && status === "done" && payload.path && !old.announced) {
+    addReceivedFile(payload);
+  }
   renderTransfers();
+}
+
+function addReceivedFile(payload) {
+  const fileName = payload.file_name || payload.path;
+  const item = {
+    from: payload.from,
+    mine: false,
+    status: "已接收",
+    content: `文件已接收：${fileName}`,
+    kind: "file",
+    file_name: fileName,
+    path: payload.path,
+    at: Date.now(),
+  };
+  if (payload.target_device_id) {
+    const peer = payload.from === state.session?.device_id ? payload.target_device_id : payload.from;
+    if (!state.directMessages.has(peer)) state.directMessages.set(peer, []);
+    pushMessage(state.directMessages.get(peer), item);
+    return;
+  }
+  pushMessage(state.groupMessages, item);
+}
+
+async function saveReceivedFile(item) {
+  try {
+    const saved = await call("save_file_as", { path: item.path, fileName: item.file_name });
+    setStatus(`已另存为：${saved}`);
+  } catch (err) {
+    setStatus(`另存失败：${err}`);
+  }
 }
 
 function markInterruptedTransfers(reason) {
@@ -437,10 +502,18 @@ function renderTransfers() {
     detail.className = "muted";
     detail.textContent = `${item.done_chunks}/${item.chunk_count} 分片 · ${formatBytes(transferredBytes(item))}/${formatBytes(
       item.total_size,
-    )} · ${formatBytes(Math.round(transferSpeed(item)))}/s${item.error ? ` · ${item.error}` : ""}`;
+    )} · ${formatBytes(Math.round(transferSpeed(item)))}/s${item.path ? ` · ${item.path}` : ""}${item.error ? ` · ${item.error}` : ""}`;
     progress.max = item.chunk_count || 1;
     progress.value = item.done_chunks || 0;
     node.append(title, detail, progress);
+    if (item.direction === "incoming" && item.status === "done" && item.path) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "secondary";
+      button.textContent = "另存为";
+      button.addEventListener("click", () => saveReceivedFile(item));
+      node.append(button);
+    }
     if (item.status === "failed") {
       const button = document.createElement("button");
       button.type = "button";
@@ -524,10 +597,12 @@ $("send-text").addEventListener("submit", async (event) => {
   renderMessages();
 });
 
-$("file-input").addEventListener("change", (event) => {
-  const file = event.target.files?.[0];
-  $("file-path").value = file?.path || "";
-  if (file && !file.path) setStatus("已选择文件；当前环境未暴露路径，请手动填写文件绝对路径。");
+$("pick-file").addEventListener("click", async () => {
+  try {
+    $("file-path").value = await call("pick_file");
+  } catch (err) {
+    setStatus(`选择文件失败：${err}`);
+  }
 });
 
 $("send-file").addEventListener("submit", async (event) => {
@@ -567,7 +642,16 @@ if (listen) {
     listen(name, ({ payload }) => {
       log(name, payload);
       if (name === "mesh://message-received") addIncoming(payload.message);
-      if (name === "mesh://neighbor-offline") markInterruptedTransfers("连接中断");
+      if (name === "mesh://neighbor-offline") {
+        markInterruptedTransfers("连接中断");
+        if (state.session?.role === "leaf") {
+          const groupId = state.session.group_id;
+          forgetRelayGroup(groupId);
+          clearSession();
+          setStatus("群组已断开");
+          return;
+        }
+      }
       if (name === "mesh://member-changed" || name.includes("neighbor")) refreshMembers();
       if (name === "mesh://transfer-progress") rememberTransfer(payload);
     });

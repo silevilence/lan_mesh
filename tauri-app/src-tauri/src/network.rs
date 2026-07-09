@@ -24,6 +24,35 @@ pub(crate) fn advertised_addr(local_addr: SocketAddr) -> SocketAddr {
         .unwrap_or(local_addr)
 }
 
+pub(crate) fn announcement_targets(local_addr: SocketAddr) -> Vec<(SocketAddr, SocketAddr)> {
+    if !local_addr.ip().is_unspecified() {
+        return vec![(
+            SocketAddr::new(local_addr.ip(), 0),
+            advertised_addr(local_addr),
+        )];
+    }
+
+    let mut targets: Vec<_> = system_network_interfaces()
+        .into_iter()
+        .filter(|(_, ip)| ip.is_ipv4())
+        .map(|(_, ip)| {
+            (
+                SocketAddr::new(ip, 0),
+                SocketAddr::new(ip, local_addr.port()),
+            )
+        })
+        .collect();
+    targets.sort();
+    targets.dedup();
+    if targets.is_empty() {
+        targets.push((
+            SocketAddr::from(([0, 0, 0, 0], 0)),
+            advertised_addr(local_addr),
+        ));
+    }
+    targets
+}
+
 pub(crate) fn network_interfaces() -> Vec<NetworkInterfaceView> {
     let mut items: Vec<_> = system_network_interfaces()
         .into_iter()
@@ -114,6 +143,15 @@ mod tests {
     fn advertised_addr_keeps_explicit_bind_address() {
         let addr = SocketAddr::from(([127, 0, 0, 1], 9000));
         assert_eq!(advertised_addr(addr), addr);
+    }
+
+    #[test]
+    fn announcement_targets_keep_explicit_bind_address() {
+        let addr = SocketAddr::from(([127, 0, 0, 1], 9000));
+        assert_eq!(
+            announcement_targets(addr),
+            vec![(SocketAddr::from(([127, 0, 0, 1], 0)), addr)]
+        );
     }
 
     #[test]
