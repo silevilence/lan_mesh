@@ -560,6 +560,37 @@ async fn broadcast_floods_once_and_skips_source_neighbor() {
 }
 
 #[tokio::test]
+async fn send_group_message_fills_header_and_floods() {
+    let group_id = GroupId::new();
+    let leaf1_device = DeviceId::new();
+    let relay = Session::with_config(DeviceId::new(), group_id, DeviceRole::Relay, fast_config());
+    let leaf1 = Session::with_config(leaf1_device, group_id, DeviceRole::Leaf, fast_config());
+    let leaf2 = Session::with_config(DeviceId::new(), group_id, DeviceRole::Leaf, fast_config());
+    let relay_addr = relay.listen("127.0.0.1:0".parse().unwrap()).await.unwrap();
+    leaf1.connect(relay_addr, None).await.unwrap();
+    leaf2.connect(relay_addr, None).await.unwrap();
+    wait_until(async || relay.neighbors().await.len() == 2).await;
+    let mut leaf2_events = leaf2.subscribe();
+
+    let message_id = leaf1.send_group_message("group").await.unwrap();
+
+    recv_matching(&mut leaf2_events, |event| {
+        matches!(
+            event,
+            SessionEvent::MessageReceived {
+                message: Message::Text { header, payload },
+                ..
+            } if header.message_id == message_id
+                && header.group_id == group_id
+                && header.source_device_id == leaf1_device
+                && header.target == MessageTarget::Broadcast
+                && payload.content == "group"
+        )
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn relay_forwards_file_chunks_without_assembly() {
     let group_id = GroupId::new();
     let leaf1_device = DeviceId::new();
@@ -645,18 +676,11 @@ async fn route_discovery_enables_direct_forward_and_offline_clears_route() {
     })
     .await;
 
-    let message_id = MessageId::new();
-    let message = text_message(
-        message_id,
-        group_id,
-        leaf_a_device,
-        MessageTarget::Device {
-            device_id: leaf_c_device,
-        },
-        "direct",
-    );
     let mut leaf_c_events = leaf_c.subscribe();
-    leaf_a.route_message(message).await.unwrap();
+    let message_id = leaf_a
+        .send_direct_message(leaf_c_device, "direct")
+        .await
+        .unwrap();
 
     recv_matching(&mut leaf_c_events, |event| {
         matches!(

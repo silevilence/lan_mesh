@@ -1,8 +1,8 @@
 use crate::{
     DeviceId, DeviceRole, FrameError, GroupId, HeartbeatPayload, MemberChange,
     MemberChangedPayload, Message, MessageHeader, MessageId, MessageTarget, NeighborId,
-    RouteDiscoveryRequestPayload, RouteDiscoveryResponsePayload, TimestampMs, now_timestamp_ms,
-    read_message_frame, write_message_frame,
+    RouteDiscoveryRequestPayload, RouteDiscoveryResponsePayload, TextPayload, TimestampMs,
+    now_timestamp_ms, read_message_frame, write_message_frame,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -327,6 +327,41 @@ impl Session {
 
     pub async fn route_message(&self, message: Message) -> Result<(), NetworkError> {
         self.inner.inject_message(message).await
+    }
+
+    pub async fn send_group_message(
+        &self,
+        content: impl Into<String>,
+    ) -> Result<MessageId, NetworkError> {
+        let message_id = MessageId::new();
+        self.inner
+            .inject_message(text_message(
+                &self.inner,
+                message_id,
+                MessageTarget::Broadcast,
+                content.into(),
+            ))
+            .await?;
+        Ok(message_id)
+    }
+
+    pub async fn send_direct_message(
+        &self,
+        target_device_id: DeviceId,
+        content: impl Into<String>,
+    ) -> Result<MessageId, NetworkError> {
+        let message_id = MessageId::new();
+        self.inner
+            .inject_message(text_message(
+                &self.inner,
+                message_id,
+                MessageTarget::Device {
+                    device_id: target_device_id,
+                },
+                content.into(),
+            ))
+            .await?;
+        Ok(message_id)
     }
 
     pub async fn discover_route(
@@ -1092,6 +1127,26 @@ fn heartbeat_message(session: &SessionInner) -> Message {
             device_id: session.device_id,
             timestamp_ms,
         },
+    }
+}
+
+fn text_message(
+    session: &SessionInner,
+    message_id: MessageId,
+    target: MessageTarget,
+    content: String,
+) -> Message {
+    Message::Text {
+        header: MessageHeader {
+            message_id,
+            group_id: session.group_id,
+            source_device_id: session.device_id,
+            target,
+            ttl: DEFAULT_ROUTE_TTL,
+            hop_count: 0,
+            timestamp_ms: now_timestamp_ms(),
+        },
+        payload: TextPayload { content },
     }
 }
 
