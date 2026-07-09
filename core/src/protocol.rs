@@ -58,6 +58,7 @@ pub struct TextPayload {
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub struct FileChunkPayload {
     pub file_id: FileId,
+    pub file_name: String,
     pub chunk_index: u32,
     pub chunk_count: u32,
     pub total_size: u64,

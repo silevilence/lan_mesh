@@ -113,6 +113,7 @@ fn file_chunk_data_uses_base64_in_json() {
         header: header(),
         payload: FileChunkPayload {
             file_id: FileId::new(),
+            file_name: "test.bin".to_string(),
             chunk_index: 0,
             chunk_count: 1,
             total_size: 5,
@@ -245,6 +246,7 @@ async fn assembler_reports_hash_mismatch_after_all_chunks() {
         .unwrap();
     let chunk = FileChunkPayload {
         file_id,
+        file_name: "assembled.bin".to_string(),
         chunk_index: 0,
         chunk_count: 1,
         total_size: 3,
@@ -616,6 +618,7 @@ async fn relay_forwards_file_chunks_without_assembly() {
         },
         payload: FileChunkPayload {
             file_id,
+            file_name: "relay.bin".to_string(),
             chunk_index: 0,
             chunk_count: 1,
             total_size: 3,

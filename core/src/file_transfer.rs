@@ -60,6 +60,7 @@ pub struct FileChunkReader {
     source_device_id: DeviceId,
     target: MessageTarget,
     ttl: u8,
+    file_name: String,
     total_size: u64,
     sha256: String,
     next_chunk_index: u32,
@@ -78,6 +79,11 @@ impl FileChunkReader {
         let path = path.as_ref();
         let total_size = tokio::fs::metadata(path).await?.len();
         let sha256 = sha256_file(path).await?;
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("received-file")
+            .to_string();
         Ok(Self {
             file: File::open(path).await?,
             file_id,
@@ -85,6 +91,7 @@ impl FileChunkReader {
             source_device_id,
             target,
             ttl,
+            file_name,
             total_size,
             sha256,
             next_chunk_index: 0,
@@ -121,6 +128,7 @@ impl FileChunkReader {
             chunk_index,
             self.chunk_count,
             self.total_size,
+            self.file_name.clone(),
             self.sha256.clone(),
             data,
             self.group_id,
@@ -142,6 +150,11 @@ pub async fn resend_file_chunks(
     let path = path.as_ref();
     let total_size = tokio::fs::metadata(path).await?.len();
     let chunk_count = chunk_count(total_size);
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("received-file")
+        .to_string();
     let sha256 = sha256_file(path).await?;
     let mut file = File::open(path).await?;
     let mut messages = Vec::with_capacity(request.missing_chunks.len());
@@ -165,6 +178,7 @@ pub async fn resend_file_chunks(
             chunk_index,
             chunk_count,
             total_size,
+            file_name.clone(),
             sha256.clone(),
             data,
             group_id,
@@ -349,6 +363,7 @@ fn file_chunk_message(
     chunk_index: u32,
     chunk_count: u32,
     total_size: u64,
+    file_name: String,
     sha256: String,
     data: Vec<u8>,
     group_id: GroupId,
@@ -368,6 +383,7 @@ fn file_chunk_message(
         },
         payload: FileChunkPayload {
             file_id,
+            file_name,
             chunk_index,
             chunk_count,
             total_size,

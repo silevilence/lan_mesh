@@ -1186,7 +1186,14 @@ async fn collect_relay_announcements(
                     continue;
                 };
                 if let Ok(announcement) = serde_json::from_slice::<RelayAnnouncement>(&buf[..len]) {
-                    relays.insert(announcement.device_id, announcement);
+                    relays.insert(
+                        (
+                            announcement.device_id,
+                            announcement.group_id,
+                            announcement.tcp_addr,
+                        ),
+                        announcement,
+                    );
                 }
             }
         }
