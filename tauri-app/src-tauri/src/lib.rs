@@ -4,6 +4,7 @@ use lan_mesh_core::{
 };
 use serde::Serialize;
 use std::{
+    net::UdpSocket as StdUdpSocket,
     net::{IpAddr, SocketAddr},
     time::Duration,
 };
@@ -12,6 +13,7 @@ use tokio::{sync::Mutex, task::JoinHandle};
 use uuid::Uuid;
 
 const DEFAULT_TTL: u8 = 8;
+const DISCOVERY_PORT: u16 = 37020;
 
 #[derive(Default)]
 struct AppState {
@@ -115,12 +117,25 @@ async fn create_group(
     state: State<'_, AppState>,
     device_id: Option<String>,
     group_id: Option<String>,
+    group_name: Option<String>,
     bind_addr: String,
 ) -> Result<SessionResponse, String> {
     let device_id = parse_or_new_device_id(device_id)?;
     let group_id = parse_or_new_group_id(group_id)?;
     let bind_addr = parse_socket_addr(&bind_addr)?;
     let (session, local_addr) = Session::create_group(device_id, group_id, bind_addr)
+        .await
+        .map_err(err_string)?;
+    session
+        .start_relay_announcement(
+            SocketAddr::from(([0, 0, 0, 0], 0)),
+            SocketAddr::from(([255, 255, 255, 255], DISCOVERY_PORT)),
+            advertised_addr(local_addr),
+            group_name
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| "LAN Mesh".to_string()),
+            Duration::from_secs(2),
+        )
         .await
         .map_err(err_string)?;
 
@@ -500,6 +515,19 @@ fn parse_optional_ip(value: Option<String>) -> Result<Option<IpAddr>, String> {
         .transpose()
 }
 
+fn advertised_addr(local_addr: SocketAddr) -> SocketAddr {
+    if !local_addr.ip().is_unspecified() {
+        return local_addr;
+    }
+    StdUdpSocket::bind(SocketAddr::from(([0, 0, 0, 0], 0)))
+        .and_then(|socket| {
+            socket.connect(SocketAddr::from(([8, 8, 8, 8], 80)))?;
+            socket.local_addr()
+        })
+        .map(|addr| SocketAddr::new(addr.ip(), local_addr.port()))
+        .unwrap_or(local_addr)
+}
+
 fn id(uuid: Uuid) -> String {
     uuid.to_string()
 }
@@ -521,4 +549,15 @@ fn duration_ms(duration: Duration) -> u64 {
 
 fn err_string(err: impl ToString) -> String {
     err.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn advertised_addr_keeps_explicit_bind_address() {
+        let addr = SocketAddr::from(([127, 0, 0, 1], 9000));
+        assert_eq!(advertised_addr(addr), addr);
+    }
 }

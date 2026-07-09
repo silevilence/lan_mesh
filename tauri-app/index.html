@@ -4,12 +4,271 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>LAN Mesh</title>
+    <style>
+      :root {
+        color: #17202a;
+        background: #f4f7fb;
+        font-family:
+          Inter, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+      }
+
+      main {
+        max-width: 1180px;
+        margin: 0 auto;
+        padding: 24px;
+      }
+
+      h1,
+      h2,
+      h3 {
+        margin: 0 0 12px;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: 360px 1fr;
+        gap: 16px;
+      }
+
+      .card {
+        background: white;
+        border: 1px solid #dbe3ee;
+        border-radius: 14px;
+        box-shadow: 0 8px 22px rgb(31 45 61 / 8%);
+        padding: 16px;
+      }
+
+      label {
+        display: block;
+        margin: 10px 0;
+        font-size: 13px;
+        color: #52616f;
+      }
+
+      input,
+      select,
+      button {
+        width: 100%;
+        margin-top: 6px;
+        border: 1px solid #cfd9e6;
+        border-radius: 10px;
+        font: inherit;
+        padding: 10px 12px;
+      }
+
+      button {
+        border: 0;
+        background: #2563eb;
+        color: white;
+        cursor: pointer;
+      }
+
+      button.secondary {
+        background: #e9eef7;
+        color: #17202a;
+      }
+
+      button.link {
+        width: auto;
+        margin: 0;
+        padding: 4px 8px;
+        background: transparent;
+        color: #2563eb;
+      }
+
+      .row {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+      }
+
+      .status {
+        min-height: 20px;
+        color: #52616f;
+        white-space: pre-wrap;
+      }
+
+      .list {
+        display: grid;
+        gap: 8px;
+      }
+
+      .item {
+        border: 1px solid #dbe3ee;
+        border-radius: 10px;
+        padding: 10px;
+        background: #fbfdff;
+      }
+
+      .muted {
+        color: #6b7a90;
+        font-size: 12px;
+      }
+
+      .tabs {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 12px;
+      }
+
+      .tabs button {
+        width: auto;
+      }
+
+      .tabs button[aria-selected="true"] {
+        background: #17202a;
+      }
+
+      .messages {
+        height: 360px;
+        overflow: auto;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 10px;
+        background: #f8fafc;
+        border: 1px solid #dbe3ee;
+        border-radius: 12px;
+      }
+
+      .message {
+        max-width: 72%;
+        padding: 10px 12px;
+        border-radius: 12px;
+        background: white;
+        border: 1px solid #dbe3ee;
+      }
+
+      .message.mine {
+        align-self: flex-end;
+        background: #dbeafe;
+      }
+
+      .composer {
+        display: grid;
+        grid-template-columns: 1fr 130px;
+        gap: 10px;
+        margin-top: 10px;
+      }
+
+      .hidden {
+        display: none;
+      }
+
+      @media (max-width: 900px) {
+        .grid,
+        .row,
+        .composer {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
   </head>
   <body>
     <main>
       <h1>LAN Mesh</h1>
-      <p>Windows Tauri shell is ready. UI work starts in task 15.</p>
-      <pre id="events"></pre>
+      <p class="status" id="status">未连接</p>
+
+      <div class="grid">
+        <section class="card">
+          <h2>群组管理</h2>
+
+          <form id="create-group">
+            <h3>创建群组</h3>
+            <label>
+              网卡
+              <select id="create-bind-preset">
+                <option value="0.0.0.0:0">所有网卡</option>
+                <option value="127.0.0.1:0">本机测试</option>
+                <option value="">手动填写</option>
+              </select>
+            </label>
+            <label>
+              手动绑定地址
+              <input id="create-bind" placeholder="0.0.0.0:0" />
+            </label>
+            <label>
+              群组名称
+              <input id="group-name" placeholder="我的 LAN Mesh" />
+            </label>
+            <button type="submit">创建群组</button>
+          </form>
+
+          <hr />
+
+          <form id="discover-form">
+            <h3>加入群组</h3>
+            <label>
+              发现监听地址
+              <select id="discover-bind">
+                <option value="0.0.0.0:37020">所有网卡</option>
+                <option value="127.0.0.1:37020">本机测试</option>
+              </select>
+            </label>
+            <button type="submit" class="secondary">刷新自动发现</button>
+          </form>
+          <div id="relays" class="list"></div>
+
+          <form id="manual-join">
+            <h3>手动加入</h3>
+            <label>
+              Group ID
+              <input id="manual-group-id" required />
+            </label>
+            <label>
+              Relay IP/端口
+              <input id="manual-relay-addr" placeholder="192.168.1.10:9000" required />
+            </label>
+            <label>
+              本地 IP（可选）
+              <input id="manual-local-ip" placeholder="192.168.1.20" />
+            </label>
+            <button type="submit">加入群组</button>
+          </form>
+
+          <hr />
+
+          <h3>成员</h3>
+          <div id="members" class="list"></div>
+        </section>
+
+        <section class="card">
+          <div class="tabs">
+            <button id="group-tab" type="button" aria-selected="true">群聊</button>
+            <button id="direct-tab" type="button" aria-selected="false">单聊：未选择</button>
+          </div>
+
+          <div id="chat-title" class="status">群聊</div>
+          <div id="messages" class="messages"></div>
+
+          <form id="send-text" class="composer">
+            <input id="message-input" placeholder="输入文本消息" required />
+            <button type="submit">发送文本</button>
+          </form>
+
+          <form id="send-file" class="composer">
+            <input id="file-input" type="file" />
+            <button type="submit">发送文件</button>
+            <input id="file-path" placeholder="文件绝对路径（选择文件后自动填充，必要时手动填写）" />
+          </form>
+
+          <h3>传输进度</h3>
+          <div id="transfers" class="list"></div>
+
+          <details>
+            <summary>事件日志</summary>
+            <pre id="events"></pre>
+          </details>
+        </section>
+      </div>
     </main>
     <script type="module" src="/src/main.js"></script>
   </body>
