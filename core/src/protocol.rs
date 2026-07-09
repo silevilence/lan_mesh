@@ -60,8 +60,16 @@ pub struct FileChunkPayload {
     pub file_id: FileId,
     pub chunk_index: u32,
     pub chunk_count: u32,
+    pub total_size: u64,
+    pub sha256: String,
     #[serde(with = "base64_data")]
     pub data: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+pub struct FileResumeRequestPayload {
+    pub file_id: FileId,
+    pub missing_chunks: Vec<u32>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
@@ -105,6 +113,10 @@ pub enum Message {
     FileChunk {
         header: MessageHeader,
         payload: FileChunkPayload,
+    },
+    FileResumeRequest {
+        header: MessageHeader,
+        payload: FileResumeRequestPayload,
     },
     Heartbeat {
         header: MessageHeader,

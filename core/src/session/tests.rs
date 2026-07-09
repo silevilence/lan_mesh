@@ -115,6 +115,8 @@ fn file_chunk_data_uses_base64_in_json() {
             file_id: FileId::new(),
             chunk_index: 0,
             chunk_count: 1,
+            total_size: 5,
+            sha256: "unused".to_string(),
             data: vec![0, 1, 2, 3, 255],
         },
     };
@@ -135,6 +137,125 @@ fn file_chunk_encoding_helpers_round_trip() {
 
     assert_eq!(encoded, "AAECA/8=");
     assert_eq!(decode_file_chunk_data(&encoded).unwrap(), data);
+}
+
+#[tokio::test]
+async fn file_chunks_assemble_out_of_order_and_verify_hash() {
+    let dir = std::env::temp_dir().join(format!("lan-mesh-{}", FileId::new().0));
+    tokio::fs::create_dir(&dir).await.unwrap();
+    let source_path = dir.join("source.bin");
+    let assembled_path = dir.join("assembled.bin");
+    let data = vec![7; FILE_CHUNK_SIZE + 3];
+    tokio::fs::write(&source_path, &data).await.unwrap();
+    let file_id = FileId::new();
+    let group_id = GroupId::new();
+    let source_device_id = DeviceId::new();
+    let mut reader = FileChunkReader::open(
+        &source_path,
+        file_id,
+        group_id,
+        source_device_id,
+        MessageTarget::Broadcast,
+        8,
+    )
+    .await
+    .unwrap();
+    let mut messages = Vec::new();
+    while let Some(message) = reader.next_message().await.unwrap() {
+        messages.push(message);
+    }
+    let first_payload = match &messages[0] {
+        Message::FileChunk { payload, .. } => payload,
+        _ => unreachable!(),
+    };
+    let mut assembler = FileAssembler::create(
+        &assembled_path,
+        file_id,
+        first_payload.chunk_count,
+        first_payload.total_size,
+        first_payload.sha256.clone(),
+    )
+    .await
+    .unwrap();
+
+    let mut status = None;
+    for message in messages.iter().rev() {
+        let Message::FileChunk { payload, .. } = message else {
+            unreachable!()
+        };
+        status = Some(assembler.push_chunk(payload).await.unwrap());
+    }
+
+    assert_eq!(
+        status.unwrap(),
+        FileAssemblyStatus::Complete {
+            path: assembled_path.clone()
+        }
+    );
+    assert_eq!(tokio::fs::read(&assembled_path).await.unwrap(), data);
+    let _ = tokio::fs::remove_dir_all(&dir).await;
+}
+
+#[tokio::test]
+async fn resume_request_resends_only_missing_chunks() {
+    let dir = std::env::temp_dir().join(format!("lan-mesh-{}", FileId::new().0));
+    tokio::fs::create_dir(&dir).await.unwrap();
+    let source_path = dir.join("source.bin");
+    tokio::fs::write(&source_path, vec![9; FILE_CHUNK_SIZE * 2 + 1])
+        .await
+        .unwrap();
+    let file_id = FileId::new();
+    let group_id = GroupId::new();
+    let source_device_id = DeviceId::new();
+    let request = FileResumeRequestPayload {
+        file_id,
+        missing_chunks: vec![2, 0],
+    };
+
+    let resent = resend_file_chunks(
+        &source_path,
+        &request,
+        group_id,
+        source_device_id,
+        MessageTarget::Broadcast,
+        8,
+    )
+    .await
+    .unwrap();
+
+    let indexes: Vec<_> = resent
+        .iter()
+        .map(|message| match message {
+            Message::FileChunk { payload, .. } => payload.chunk_index,
+            _ => unreachable!(),
+        })
+        .collect();
+    assert_eq!(indexes, vec![2, 0]);
+    let _ = tokio::fs::remove_dir_all(&dir).await;
+}
+
+#[tokio::test]
+async fn assembler_reports_hash_mismatch_after_all_chunks() {
+    let dir = std::env::temp_dir().join(format!("lan-mesh-{}", FileId::new().0));
+    tokio::fs::create_dir(&dir).await.unwrap();
+    let assembled_path = dir.join("assembled.bin");
+    let file_id = FileId::new();
+    let mut assembler = FileAssembler::create(&assembled_path, file_id, 1, 3, "00")
+        .await
+        .unwrap();
+    let chunk = FileChunkPayload {
+        file_id,
+        chunk_index: 0,
+        chunk_count: 1,
+        total_size: 3,
+        sha256: "00".to_string(),
+        data: vec![1, 2, 3],
+    };
+
+    let status = assembler.push_chunk(&chunk).await.unwrap();
+
+    assert!(matches!(status, FileAssemblyStatus::HashMismatch { .. }));
+    let _ = tokio::fs::remove_dir_all(&dir).await;
 }
 
 #[tokio::test]
@@ -435,6 +556,63 @@ async fn broadcast_floods_once_and_skips_source_neighbor() {
         })
         .await
         .is_err()
+    );
+}
+
+#[tokio::test]
+async fn relay_forwards_file_chunks_without_assembly() {
+    let group_id = GroupId::new();
+    let leaf1_device = DeviceId::new();
+    let leaf2_device = DeviceId::new();
+    let relay = Session::with_config(DeviceId::new(), group_id, DeviceRole::Relay, fast_config());
+    let leaf1 = Session::with_config(leaf1_device, group_id, DeviceRole::Leaf, fast_config());
+    let leaf2 = Session::with_config(leaf2_device, group_id, DeviceRole::Leaf, fast_config());
+    let relay_addr = relay.listen("127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let leaf1_neighbor = leaf1.connect(relay_addr, None).await.unwrap();
+    leaf2.connect(relay_addr, None).await.unwrap();
+    wait_until(async || relay.neighbors().await.len() == 2).await;
+    let message_id = MessageId::new();
+    let file_id = FileId::new();
+    let message = Message::FileChunk {
+        header: MessageHeader {
+            message_id,
+            group_id,
+            source_device_id: leaf1_device,
+            target: MessageTarget::Broadcast,
+            ttl: 8,
+            hop_count: 0,
+            timestamp_ms: now_timestamp_ms(),
+        },
+        payload: FileChunkPayload {
+            file_id,
+            chunk_index: 0,
+            chunk_count: 1,
+            total_size: 3,
+            sha256: "unused".to_string(),
+            data: vec![1, 2, 3],
+        },
+    };
+    let mut leaf2_events = leaf2.subscribe();
+
+    leaf1.send_message(leaf1_neighbor, message).await.unwrap();
+
+    recv_matching(&mut leaf2_events, |event| {
+        matches!(
+            event,
+            SessionEvent::MessageReceived {
+                message: Message::FileChunk { header, payload },
+                ..
+            } if header.message_id == message_id && payload.file_id == file_id
+        )
+    })
+    .await;
+    assert!(
+        relay
+            .inner
+            .seen_messages
+            .lock()
+            .await
+            .contains_key(&message_id)
     );
 }
 
