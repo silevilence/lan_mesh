@@ -4,29 +4,29 @@ const listen = tauri?.event?.listen;
 
 const state = {
   session: null,
-  view: "group",
-  directTarget: "",
+  selected: null,
+  members: [],
+  routes: [],
+  relays: [],
   groupMessages: [],
   directMessages: new Map(),
   transfers: new Map(),
 };
 
 const $ = (id) => document.querySelector(`#${id}`);
-const status = $("status");
-const events = $("events");
-const relays = $("relays");
-const members = $("members");
-const neighbors = $("neighbors");
-const messages = $("messages");
-const transfers = $("transfers");
-const networkInterfaces = $("network-interfaces");
-
 const text = (value) => String(value ?? "");
 const short = (value) => text(value).slice(0, 8);
 const headerOf = (message) => message?.header ?? {};
 const payloadOf = (message) => message?.payload ?? {};
 const sourceOf = (message) => headerOf(message).source_device_id ?? headerOf(message).sourceDeviceId;
 const targetOf = (message) => headerOf(message).target ?? {};
+
+const status = $("status");
+const sessionList = $("session-list");
+const memberList = $("member-list");
+const messages = $("messages");
+const transfers = $("transfers");
+const events = $("events");
 
 function setStatus(value) {
   status.textContent = value;
@@ -42,6 +42,15 @@ async function call(command, args = {}) {
   return invoke(command, args);
 }
 
+function showDialog(id) {
+  const dialog = $(id);
+  if (dialog?.showModal) dialog.showModal();
+}
+
+function closeDialog(id) {
+  $(id)?.close();
+}
+
 function bindAddr() {
   return $("create-bind-preset").value || $("create-bind").value || "0.0.0.0:0";
 }
@@ -50,153 +59,156 @@ function selectedLocalIp() {
   return $("join-interface").value || $("manual-local-ip").value;
 }
 
+function sessionLabel() {
+  if (!state.session) return "未连接";
+  const role = state.session.role === "relay" ? "Relay" : "Leaf";
+  const addr = state.session.bind_addr ? ` · ${state.session.bind_addr}` : "";
+  return `${role} · ${short(state.session.device_id)} · ${short(state.session.group_id)}${addr}`;
+}
+
 function setSession(session) {
   state.session = session;
-  setStatus(
-    `${session.role === "relay" ? "Relay" : "Leaf"} device=${short(session.device_id)} group=${short(session.group_id)} ${
-      session.bind_addr ? `addr=${session.bind_addr}` : ""
-    }`,
-  );
+  state.selected = { type: "group" };
+  state.members = [];
+  state.routes = [];
+  state.groupMessages = [];
+  state.directMessages.clear();
+  state.transfers.clear();
+  setStatus(sessionLabel());
   $("manual-group-id").value = session.group_id;
   refreshMembers();
+  renderAll();
 }
 
-function renderRelays(items) {
-  relays.innerHTML = "";
-  if (!items.length) {
-    const empty = document.createElement("div");
-    empty.className = "muted";
-    empty.textContent = "未发现 Relay";
-    relays.append(empty);
+function clearSession() {
+  state.session = null;
+  state.selected = null;
+  state.members = [];
+  state.routes = [];
+  state.groupMessages = [];
+  state.directMessages.clear();
+  state.transfers.clear();
+  setStatus("未连接");
+  renderAll();
+}
+
+function renderAll() {
+  renderSessionList();
+  renderMembers();
+  renderConversation();
+  renderTransfers();
+}
+
+function renderSessionList() {
+  sessionList.innerHTML = "";
+
+  if (state.session) {
+    const node = document.createElement("button");
+    node.type = "button";
+    node.className = `item clickable ${state.selected?.type === "group" ? "active" : ""}`;
+    node.innerHTML = `
+      <div class="item-head">
+        <span class="title">群聊 · ${short(state.session.group_id)}</span>
+        <span class="badge">${state.session.role === "relay" ? "我创建的" : "已加入"}</span>
+      </div>
+      <div class="muted">${sessionLabel()}</div>
+    `;
+    node.addEventListener("click", openGroup);
+    sessionList.append(node);
+  }
+
+  for (const relay of state.relays) {
+    if (relay.group_id === state.session?.group_id) continue;
+    const node = document.createElement("button");
+    node.type = "button";
+    node.className = "item clickable";
+    node.innerHTML = `
+      <div class="item-head">
+        <span class="title">${relay.group_name || "LAN Mesh"}</span>
+        <span class="badge">可加入</span>
+      </div>
+      <div class="muted">${short(relay.group_id)} · ${relay.tcp_addr}</div>
+    `;
+    node.addEventListener("click", () => openJoinDialog(relay));
+    sessionList.append(node);
+  }
+
+  if (!sessionList.children.length) {
+    sessionList.append(emptyItem("没有群组。新建或加入后会出现在这里。"));
+  }
+}
+
+function renderMembers() {
+  memberList.innerHTML = "";
+  if (!state.session) {
+    memberList.append(emptyItem("加入群组后显示可单聊对象。"));
     return;
   }
-  for (const relay of items) {
-    const node = document.createElement("div");
-    node.className = "item";
-    const title = document.createElement("strong");
-    const group = document.createElement("div");
-    const addr = document.createElement("div");
-    const button = document.createElement("button");
-    title.textContent = relay.group_name || "LAN Mesh";
-    group.className = "muted";
-    group.textContent = `group=${relay.group_id}`;
-    addr.className = "muted";
-    addr.textContent = `relay=${relay.tcp_addr}`;
-    button.type = "button";
-    button.textContent = "加入";
-    button.addEventListener("click", () => join(relay.group_id, relay.tcp_addr, selectedLocalIp()));
-    node.append(title, group, addr, button);
-    relays.append(node);
+
+  const peers = state.members.filter((member) => member.device_id !== state.session.device_id);
+  for (const member of peers) {
+    const node = document.createElement("button");
+    node.type = "button";
+    node.className = `item clickable ${state.selected?.type === "direct" && state.selected.id === member.device_id ? "active" : ""}`;
+    node.innerHTML = `
+      <div class="item-head">
+        <span class="title">${short(member.device_id)}</span>
+        <span class="badge ${member.online ? "online" : ""}">${member.online ? "在线" : "离线"}</span>
+      </div>
+      <div class="muted">${routeLabel(member)}</div>
+    `;
+    node.addEventListener("click", () => openDirect(member.device_id));
+    memberList.append(node);
   }
+
+  if (!peers.length) memberList.append(emptyItem("暂无其他成员。"));
 }
 
-function renderNetworkInterfaces(items) {
-  networkInterfaces.innerHTML = "";
-  const create = $("create-bind-preset");
-  const discover = $("discover-bind");
-  const joinSelect = $("join-interface");
-
-  for (const item of items) {
-    const node = document.createElement("div");
-    node.className = "item";
-    node.textContent = `${item.name} · ${item.ip_addr}`;
-    networkInterfaces.append(node);
-
-    create.add(new Option(`${item.name} (${item.ip_addr})`, item.bind_addr));
-    discover.add(new Option(`${item.name} (${item.ip_addr})`, item.discovery_bind_addr));
-    joinSelect.add(new Option(`${item.name} (${item.ip_addr})`, item.ip_addr));
-  }
+function emptyItem(content) {
+  const node = document.createElement("div");
+  node.className = "item muted";
+  node.textContent = content;
+  return node;
 }
 
-async function loadNetworkInterfaces() {
-  try {
-    renderNetworkInterfaces(await call("list_network_interfaces"));
-  } catch (err) {
-    log("list_network_interfaces failed", text(err));
-  }
-}
-
-function routeLabel(member, routes, selfId) {
-  if (member.device_id === selfId) return "本机";
-  const route = routes.find((item) => item.target_device_id === member.device_id);
+function routeLabel(member) {
+  const route = state.routes.find((item) => item.target_device_id === member.device_id);
   if (!member.online) return "离线";
   if (!route) return "可达状态未知";
   return route.path.length <= 2 ? "直连可达" : `多跳可达(${route.path.length - 1}跳)`;
 }
 
-function renderNeighbors(items) {
-  neighbors.innerHTML = "";
-  if (!items.length) {
-    const empty = document.createElement("div");
-    empty.className = "muted";
-    empty.textContent = "暂无邻居连接";
-    neighbors.append(empty);
-    return;
-  }
-  for (const neighbor of items) {
-    const node = document.createElement("div");
-    node.className = "item";
-    node.textContent = `${short(neighbor.neighbor_id)} · ${neighbor.peer_addr}`;
-    const active = document.createElement("div");
-    active.className = "muted";
-    active.textContent = `最近活跃：${Math.round(neighbor.last_active_ms / 1000)} 秒前`;
-    node.append(active);
-    neighbors.append(node);
-  }
-}
-
-async function refreshMembers() {
-  if (!state.session) return;
-  const [memberList, statusSnapshot] = await Promise.all([
-    call("get_members"),
-    call("get_connection_status"),
-  ]);
-  renderNeighbors(statusSnapshot.neighbors);
-  members.innerHTML = "";
-  for (const member of memberList.sort((a, b) => text(a.device_id).localeCompare(text(b.device_id)))) {
-    const node = document.createElement("div");
-    node.className = "item";
-    const title = document.createElement("strong");
-    const online = document.createElement("span");
-    const route = document.createElement("div");
-    const button = document.createElement("button");
-    title.textContent = short(member.device_id);
-    online.textContent = member.online ? "在线" : "离线";
-    route.className = "muted";
-    route.textContent = routeLabel(member, statusSnapshot.routes, statusSnapshot.device_id);
-    button.type = "button";
-    button.className = "link";
-    button.textContent = "单聊";
-    button.disabled = member.device_id === statusSnapshot.device_id;
-    button.addEventListener("click", () => openDirect(member.device_id));
-    node.append(title, " ", online, route, button);
-    members.append(node);
-  }
-}
-
 function openGroup() {
-  state.view = "group";
-  $("group-tab").setAttribute("aria-selected", "true");
-  $("direct-tab").setAttribute("aria-selected", "false");
-  $("chat-title").textContent = "群聊";
-  renderMessages();
+  if (!state.session) return;
+  state.selected = { type: "group" };
+  renderAll();
 }
 
 function openDirect(deviceId) {
-  state.view = "direct";
-  state.directTarget = deviceId;
-  $("group-tab").setAttribute("aria-selected", "false");
-  $("direct-tab").setAttribute("aria-selected", "true");
-  $("direct-tab").textContent = `单聊：${short(deviceId)}`;
-  $("chat-title").textContent = `单聊 ${deviceId}`;
+  if (!state.session || !deviceId) return;
+  state.selected = { type: "direct", id: deviceId };
   if (!state.directMessages.has(deviceId)) state.directMessages.set(deviceId, []);
-  renderMessages();
+  renderAll();
 }
 
 function activeMessages() {
-  if (state.view === "group") return state.groupMessages;
-  if (!state.directMessages.has(state.directTarget)) state.directMessages.set(state.directTarget, []);
-  return state.directMessages.get(state.directTarget);
+  if (state.selected?.type === "group") return state.groupMessages;
+  if (state.selected?.type !== "direct") return [];
+  if (!state.directMessages.has(state.selected.id)) state.directMessages.set(state.selected.id, []);
+  return state.directMessages.get(state.selected.id);
+}
+
+function renderConversation() {
+  const hasSelection = Boolean(state.session && state.selected);
+  $("empty-state").classList.toggle("hidden", hasSelection);
+  $("chat-pane").classList.toggle("hidden", !hasSelection);
+  if (!hasSelection) return;
+
+  const isGroup = state.selected.type === "group";
+  $("peer-title").textContent = isGroup ? "群聊" : `单聊 ${short(state.selected.id)}`;
+  $("peer-subtitle").textContent = isGroup ? sessionLabel() : state.selected.id;
+  $("leave-button").textContent = state.session.role === "relay" ? "解散群组" : "退出群组";
+  renderMessages();
 }
 
 function pushMessage(list, item) {
@@ -204,7 +216,6 @@ function pushMessage(list, item) {
   list.push(item);
   list.sort((a, b) => a.at - b.at);
   renderMessages();
-  return item;
 }
 
 function renderMessages() {
@@ -224,27 +235,117 @@ function renderMessages() {
 }
 
 function addIncoming(message) {
-  if (!message) return;
-  const type = message.type;
+  if (!message || !state.session) return;
   const source = sourceOf(message);
   const target = targetOf(message);
   const payload = payloadOf(message);
   const item = {
     from: source,
-    mine: source === state.session?.device_id,
+    mine: source === state.session.device_id,
     status: "已送达",
-    content: type === "text" ? payload.content : `文件分片 ${payload.file_id || ""}`,
-    kind: type === "file_chunk" ? "file" : "text",
+    content: message.type === "text" ? payload.content : `文件分片 ${payload.file_id || ""}`,
+    kind: message.type === "file_chunk" ? "file" : "text",
     at: headerOf(message).timestamp_ms || Date.now(),
   };
 
   if (target.kind === "device" || target.device_id || target.deviceId) {
-    const peer = source === state.session?.device_id ? target.device_id ?? target.deviceId : source;
+    const peer = source === state.session.device_id ? target.device_id ?? target.deviceId : source;
     if (!state.directMessages.has(peer)) state.directMessages.set(peer, []);
     pushMessage(state.directMessages.get(peer), item);
     return;
   }
   pushMessage(state.groupMessages, item);
+}
+
+async function refreshMembers() {
+  if (!state.session) return;
+  const [memberList, statusSnapshot] = await Promise.all([
+    call("get_members"),
+    call("get_connection_status"),
+  ]);
+  state.members = memberList.sort((a, b) => text(a.device_id).localeCompare(text(b.device_id)));
+  state.routes = statusSnapshot.routes;
+  renderAll();
+}
+
+function renderRelays(items) {
+  const relays = $("relays");
+  relays.innerHTML = "";
+  if (!items.length) {
+    relays.append(emptyItem("未发现 Relay，可手动填写。"));
+    return;
+  }
+  for (const relay of items) {
+    const node = document.createElement("button");
+    node.type = "button";
+    node.className = "item clickable";
+    node.innerHTML = `
+      <div class="item-head">
+        <span class="title">${relay.group_name || "LAN Mesh"}</span>
+        <span class="badge">填入</span>
+      </div>
+      <div class="muted">${relay.group_id}<br />${relay.tcp_addr}</div>
+    `;
+    node.addEventListener("click", () => fillJoinForm(relay));
+    relays.append(node);
+  }
+}
+
+function fillJoinForm(relay) {
+  $("manual-group-id").value = relay.group_id;
+  $("manual-relay-addr").value = relay.tcp_addr;
+}
+
+function openJoinDialog(relay = null) {
+  if (relay) fillJoinForm(relay);
+  showDialog("join-dialog");
+}
+
+function renderNetworkInterfaces(items) {
+  const networkInterfaces = $("network-interfaces");
+  const create = $("create-bind-preset");
+  const discover = $("discover-bind");
+  const joinSelect = $("join-interface");
+  networkInterfaces.innerHTML = "";
+  create.length = 3;
+  discover.length = 2;
+  joinSelect.length = 1;
+
+  for (const item of items) {
+    const node = document.createElement("div");
+    node.className = "item muted";
+    node.textContent = `${item.name} · ${item.ip_addr}`;
+    networkInterfaces.append(node);
+    create.add(new Option(`${item.name} (${item.ip_addr})`, item.bind_addr));
+    discover.add(new Option(`${item.name} (${item.ip_addr})`, item.discovery_bind_addr));
+    joinSelect.add(new Option(`${item.name} (${item.ip_addr})`, item.ip_addr));
+  }
+}
+
+async function loadNetworkInterfaces() {
+  try {
+    renderNetworkInterfaces(await call("list_network_interfaces"));
+  } catch (err) {
+    log("list_network_interfaces failed", text(err));
+  }
+}
+
+async function join(groupId, relayAddr, localIp = "") {
+  const session = await call("join_group", {
+    deviceId: null,
+    groupId,
+    relayAddr,
+    localIp: localIp || null,
+  });
+  setSession(session);
+}
+
+async function closeCurrentSession() {
+  if (!state.session) return;
+  const action = state.session.role === "relay" ? "解散群组" : "退出群组";
+  if (!confirm(`${action}后会断开当前会话，继续？`)) return;
+  await call("close_session");
+  clearSession();
 }
 
 function formatBytes(value) {
@@ -328,9 +429,10 @@ function renderTransfers() {
     const done = item.chunk_count ? Math.round((item.done_chunks / item.chunk_count) * 100) : 0;
     const node = document.createElement("div");
     node.className = "item";
-    const title = document.createElement("strong");
+    const title = document.createElement("div");
     const detail = document.createElement("div");
     const progress = document.createElement("progress");
+    title.className = "title";
     title.textContent = `${item.direction === "incoming" ? "接收" : "发送"} ${short(item.file_id)} · ${done}%`;
     detail.className = "muted";
     detail.textContent = `${item.done_chunks}/${item.chunk_count} 分片 · ${formatBytes(transferredBytes(item))}/${formatBytes(
@@ -357,17 +459,14 @@ function renderTransfers() {
     }
     transfers.append(node);
   }
+  if (!transfers.children.length) transfers.append(emptyItem("暂无传输。"));
 }
 
-async function join(groupId, relayAddr, localIp = "") {
-  const session = await call("join_group", {
-    deviceId: null,
-    groupId,
-    relayAddr,
-    localIp: localIp || null,
-  });
-  setSession(session);
-}
+$("open-create").addEventListener("click", () => showDialog("create-dialog"));
+$("open-join").addEventListener("click", () => openJoinDialog());
+$("close-create").addEventListener("click", () => closeDialog("create-dialog"));
+$("close-join").addEventListener("click", () => closeDialog("join-dialog"));
+$("leave-button").addEventListener("click", closeCurrentSession);
 
 $("create-group").addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -378,6 +477,7 @@ $("create-group").addEventListener("submit", async (event) => {
       groupName: $("group-name").value,
       bindAddr: bindAddr(),
     });
+    closeDialog("create-dialog");
     setSession(session);
   } catch (err) {
     setStatus(`创建失败：${err}`);
@@ -387,7 +487,9 @@ $("create-group").addEventListener("submit", async (event) => {
 $("discover-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
-    renderRelays(await call("discover_relays", { bindAddr: $("discover-bind").value, durationMs: 1000 }));
+    state.relays = await call("discover_relays", { bindAddr: $("discover-bind").value, durationMs: 1000 });
+    renderRelays(state.relays);
+    renderSessionList();
   } catch (err) {
     setStatus(`发现失败：${err}`);
   }
@@ -397,27 +499,24 @@ $("manual-join").addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
     await join($("manual-group-id").value, $("manual-relay-addr").value, selectedLocalIp());
+    closeDialog("join-dialog");
   } catch (err) {
     setStatus(`加入失败：${err}`);
   }
 });
 
-$("group-tab").addEventListener("click", openGroup);
-$("direct-tab").addEventListener("click", () => state.directTarget && openDirect(state.directTarget));
-
 $("send-text").addEventListener("submit", async (event) => {
   event.preventDefault();
   const content = $("message-input").value.trim();
-  if (!content) return;
-  const list = activeMessages();
+  if (!content || !state.selected) return;
   const item = { mine: true, from: state.session?.device_id, content, status: "发送中", kind: "text" };
-  pushMessage(list, item);
+  pushMessage(activeMessages(), item);
   $("message-input").value = "";
   try {
     item.messageId =
-      state.view === "group"
+      state.selected.type === "group"
         ? await call("send_group_text", { content })
-        : await call("send_direct_text", { targetDeviceId: state.directTarget, content });
+        : await call("send_direct_text", { targetDeviceId: state.selected.id, content });
     item.status = "已送达";
   } catch (err) {
     item.status = `失败：${err}`;
@@ -434,8 +533,8 @@ $("file-input").addEventListener("change", (event) => {
 $("send-file").addEventListener("submit", async (event) => {
   event.preventDefault();
   const path = $("file-path").value.trim();
-  if (!path) {
-    setStatus("请先选择文件，或手动填写文件绝对路径。");
+  if (!path || !state.selected) {
+    setStatus("请先选择会话和文件。");
     return;
   }
   const item = { mine: true, from: state.session?.device_id, content: path, status: "发送中", kind: "file" };
@@ -443,7 +542,7 @@ $("send-file").addEventListener("submit", async (event) => {
   try {
     const sent = await call("send_file", {
       path,
-      targetDeviceId: state.view === "direct" ? state.directTarget : null,
+      targetDeviceId: state.selected.type === "direct" ? state.selected.id : null,
     });
     item.status = `已送达 ${sent.chunk_count} 分片`;
   } catch (err) {
@@ -451,6 +550,10 @@ $("send-file").addEventListener("submit", async (event) => {
     markLastOutgoingFailed(path, err);
   }
   renderMessages();
+});
+
+$("join-interface").addEventListener("change", () => {
+  $("manual-local-ip").value = $("join-interface").value;
 });
 
 if (listen) {
@@ -471,9 +574,5 @@ if (listen) {
   }
 }
 
-$("join-interface").addEventListener("change", () => {
-  $("manual-local-ip").value = $("join-interface").value;
-});
-
-openGroup();
+renderAll();
 loadNetworkInterfaces();

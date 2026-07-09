@@ -6,10 +6,10 @@
     <title>LAN Mesh</title>
     <style>
       :root {
-        color: #17202a;
-        background: #f4f7fb;
+        color: #18202a;
+        background: #eef3f8;
         font-family:
-          Inter, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+          "Segoe UI Variable", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
       }
 
       * {
@@ -18,70 +18,299 @@
 
       body {
         margin: 0;
+        height: 100vh;
+        overflow: hidden;
       }
 
-      main {
-        max-width: 1180px;
-        margin: 0 auto;
-        padding: 24px;
-      }
-
-      h1,
-      h2,
-      h3 {
-        margin: 0 0 12px;
-      }
-
-      .grid {
-        display: grid;
-        grid-template-columns: 360px 1fr;
-        gap: 16px;
-      }
-
-      .card {
-        background: white;
-        border: 1px solid #dbe3ee;
-        border-radius: 14px;
-        box-shadow: 0 8px 22px rgb(31 45 61 / 8%);
-        padding: 16px;
-      }
-
-      label {
-        display: block;
-        margin: 10px 0;
-        font-size: 13px;
-        color: #52616f;
-      }
-
+      button,
       input,
-      select,
-      button {
-        width: 100%;
-        margin-top: 6px;
-        border: 1px solid #cfd9e6;
-        border-radius: 10px;
+      select {
         font: inherit;
-        padding: 10px 12px;
       }
 
       button {
         border: 0;
-        background: #2563eb;
+        border-radius: 12px;
+        background: #1f5eff;
         color: white;
         cursor: pointer;
+        padding: 10px 14px;
       }
 
       button.secondary {
-        background: #e9eef7;
-        color: #17202a;
+        background: #e6edf7;
+        color: #18202a;
       }
 
-      button.link {
-        width: auto;
-        margin: 0;
-        padding: 4px 8px;
+      button.danger {
+        background: #ffe8e8;
+        color: #ba1a1a;
+      }
+
+      button.ghost {
         background: transparent;
-        color: #2563eb;
+        color: #526071;
+      }
+
+      input,
+      select {
+        width: 100%;
+        border: 1px solid #d3deeb;
+        border-radius: 12px;
+        padding: 10px 12px;
+        background: white;
+      }
+
+      label {
+        display: grid;
+        gap: 6px;
+        color: #526071;
+        font-size: 13px;
+      }
+
+      .app {
+        height: 100vh;
+        display: grid;
+        grid-template-columns: 360px minmax(0, 1fr);
+        gap: 18px;
+        padding: 18px;
+      }
+
+      .sidebar,
+      .chat {
+        min-height: 0;
+        border: 1px solid #dbe4ef;
+        border-radius: 24px;
+        background: rgb(255 255 255 / 86%);
+        box-shadow: 0 18px 50px rgb(32 48 70 / 10%);
+      }
+
+      .sidebar {
+        display: flex;
+        flex-direction: column;
+        padding: 18px;
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 14px;
+      }
+
+      .mark {
+        width: 36px;
+        height: 36px;
+        border-radius: 12px;
+        background: linear-gradient(135deg, #ff9e2c, #1f5eff);
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin: 0;
+      }
+
+      h1 {
+        font-size: 24px;
+      }
+
+      h2 {
+        font-size: 14px;
+        letter-spacing: 0.08em;
+        color: #6b7789;
+        text-transform: uppercase;
+      }
+
+      .status {
+        color: #526071;
+        font-size: 13px;
+        min-height: 18px;
+      }
+
+      .actions {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+        margin: 18px 0;
+      }
+
+      .rail {
+        min-height: 0;
+        overflow: auto;
+        display: grid;
+        align-content: start;
+        gap: 18px;
+        padding-right: 2px;
+      }
+
+      .list {
+        display: grid;
+        gap: 8px;
+        margin-top: 10px;
+      }
+
+      .item {
+        border: 1px solid #dbe4ef;
+        border-radius: 16px;
+        background: #fbfdff;
+        padding: 12px;
+      }
+
+      .item.clickable {
+        text-align: left;
+        color: inherit;
+      }
+
+      .item.clickable:hover {
+        border-color: #1f5eff;
+      }
+
+      .item.active {
+        border-color: #1f5eff;
+        background: #edf4ff;
+      }
+
+      .item-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+        align-items: center;
+      }
+
+      .title {
+        font-weight: 700;
+      }
+
+      .muted {
+        color: #6b7789;
+        font-size: 12px;
+      }
+
+      .badge {
+        border-radius: 999px;
+        padding: 3px 8px;
+        background: #e8eef7;
+        color: #526071;
+        font-size: 12px;
+      }
+
+      .online {
+        background: #e4f8ee;
+        color: #12713d;
+      }
+
+      .chat {
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+
+      .chat.empty {
+        display: grid;
+        place-items: center;
+        color: #6b7789;
+      }
+
+      .chat-header {
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        align-items: center;
+        padding: 18px 20px;
+        border-bottom: 1px solid #dbe4ef;
+      }
+
+      .chat-title {
+        display: grid;
+        gap: 4px;
+      }
+
+      .messages {
+        min-height: 0;
+        flex: 1;
+        overflow: auto;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        padding: 18px 20px;
+        background:
+          radial-gradient(circle at 12% 0%, rgb(31 94 255 / 8%), transparent 28%),
+          #f7f9fc;
+      }
+
+      .message {
+        max-width: 70%;
+        padding: 10px 12px;
+        border-radius: 16px;
+        background: white;
+        border: 1px solid #dbe4ef;
+      }
+
+      .message.mine {
+        align-self: flex-end;
+        background: #1f5eff;
+        color: white;
+        border-color: #1f5eff;
+      }
+
+      .message.mine .muted {
+        color: rgb(255 255 255 / 72%);
+      }
+
+      .composer {
+        display: grid;
+        gap: 10px;
+        padding: 14px 20px 18px;
+        border-top: 1px solid #dbe4ef;
+        background: white;
+      }
+
+      .send-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 112px;
+        gap: 10px;
+      }
+
+      .file-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 112px;
+        gap: 10px;
+      }
+
+      details {
+        padding: 0 20px 14px;
+      }
+
+      pre {
+        max-height: 120px;
+        overflow: auto;
+        white-space: pre-wrap;
+      }
+
+      dialog {
+        width: min(560px, calc(100vw - 36px));
+        border: 1px solid #dbe4ef;
+        border-radius: 22px;
+        padding: 0;
+        box-shadow: 0 24px 80px rgb(20 31 50 / 30%);
+      }
+
+      dialog::backdrop {
+        background: rgb(14 23 36 / 45%);
+      }
+
+      .modal {
+        display: grid;
+        gap: 14px;
+        padding: 18px;
+      }
+
+      .modal-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
       }
 
       .row {
@@ -90,201 +319,177 @@
         gap: 10px;
       }
 
-      .status {
-        min-height: 20px;
-        color: #52616f;
-        white-space: pre-wrap;
-      }
-
-      .list {
-        display: grid;
-        gap: 8px;
-      }
-
-      .item {
-        border: 1px solid #dbe3ee;
-        border-radius: 10px;
-        padding: 10px;
-        background: #fbfdff;
-      }
-
-      .item progress {
-        width: 100%;
-        margin-top: 8px;
-      }
-
-      .muted {
-        color: #6b7a90;
-        font-size: 12px;
-      }
-
-      .tabs {
-        display: flex;
-        gap: 8px;
-        margin-bottom: 12px;
-      }
-
-      .tabs button {
-        width: auto;
-      }
-
-      .tabs button[aria-selected="true"] {
-        background: #17202a;
-      }
-
-      .messages {
-        height: 360px;
-        overflow: auto;
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
-        padding: 10px;
-        background: #f8fafc;
-        border: 1px solid #dbe3ee;
-        border-radius: 12px;
-      }
-
-      .message {
-        max-width: 72%;
-        padding: 10px 12px;
-        border-radius: 12px;
-        background: white;
-        border: 1px solid #dbe3ee;
-      }
-
-      .message.mine {
-        align-self: flex-end;
-        background: #dbeafe;
-      }
-
-      .composer {
-        display: grid;
-        grid-template-columns: 1fr 130px;
-        gap: 10px;
-        margin-top: 10px;
-      }
-
       .hidden {
-        display: none;
+        display: none !important;
       }
 
-      @media (max-width: 900px) {
-        .grid,
-        .row,
-        .composer {
+      @media (max-width: 860px) {
+        body {
+          overflow: auto;
+          height: auto;
+        }
+
+        .app {
+          height: auto;
+          grid-template-columns: 1fr;
+        }
+
+        .chat {
+          min-height: 70vh;
+        }
+
+        .file-row,
+        .row {
           grid-template-columns: 1fr;
         }
       }
     </style>
   </head>
   <body>
-    <main>
-      <h1>LAN Mesh</h1>
-      <p class="status" id="status">未连接</p>
-
-      <div class="grid">
-        <section class="card">
-          <h2>群组管理</h2>
-          <h3>可用网卡</h3>
-          <div id="network-interfaces" class="list"></div>
-
-          <form id="create-group">
-            <h3>创建群组</h3>
-            <label>
-              网卡
-              <select id="create-bind-preset">
-                <option value="0.0.0.0:0">所有网卡</option>
-                <option value="127.0.0.1:0">本机测试</option>
-                <option value="">手动填写</option>
-              </select>
-            </label>
-            <label>
-              手动绑定地址
-              <input id="create-bind" placeholder="0.0.0.0:0" />
-            </label>
-            <label>
-              群组名称
-              <input id="group-name" placeholder="我的 LAN Mesh" />
-            </label>
-            <button type="submit">创建群组</button>
-          </form>
-
-          <hr />
-
-          <form id="discover-form">
-            <h3>加入群组</h3>
-            <label>
-              发现监听地址
-              <select id="discover-bind">
-                <option value="0.0.0.0:37020">所有网卡</option>
-                <option value="127.0.0.1:37020">本机测试</option>
-              </select>
-            </label>
-            <button type="submit" class="secondary">刷新自动发现</button>
-          </form>
-          <div id="relays" class="list"></div>
-
-          <form id="manual-join">
-            <h3>手动加入</h3>
-            <label>
-              发起连接网卡
-              <select id="join-interface">
-                <option value="">自动选择</option>
-              </select>
-            </label>
-            <label>
-              Group ID
-              <input id="manual-group-id" required />
-            </label>
-            <label>
-              Relay IP/端口
-              <input id="manual-relay-addr" placeholder="192.168.1.10:9000" required />
-            </label>
-            <label>
-              本地 IP（可选）
-              <input id="manual-local-ip" placeholder="192.168.1.20" />
-            </label>
-            <button type="submit">加入群组</button>
-          </form>
-
-          <hr />
-
-          <h3>成员</h3>
-          <div id="members" class="list"></div>
-          <h3>邻居连接</h3>
-          <div id="neighbors" class="list"></div>
-        </section>
-
-        <section class="card">
-          <div class="tabs">
-            <button id="group-tab" type="button" aria-selected="true">群聊</button>
-            <button id="direct-tab" type="button" aria-selected="false">单聊：未选择</button>
+    <main class="app">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="mark" aria-hidden="true"></div>
+          <div>
+            <h1>LAN Mesh</h1>
+            <p class="status" id="status">未连接</p>
           </div>
+        </div>
 
-          <div id="chat-title" class="status">群聊</div>
-          <div id="messages" class="messages"></div>
+        <div class="actions">
+          <button id="open-create" type="button">新建群组</button>
+          <button id="open-join" type="button" class="secondary">加入群组</button>
+        </div>
 
-          <form id="send-text" class="composer">
+        <div class="rail">
+          <section>
+            <h2>群组</h2>
+            <div id="session-list" class="list"></div>
+          </section>
+          <section>
+            <h2>单聊对象</h2>
+            <div id="member-list" class="list"></div>
+          </section>
+          <section>
+            <h2>传输进度</h2>
+            <div id="transfers" class="list"></div>
+          </section>
+        </div>
+      </aside>
+
+      <section id="empty-state" class="chat empty">
+        <div>
+          <h2>先选择群组或单聊对象</h2>
+          <p class="muted">左侧只负责选择会话；进入后再发送消息和文件。</p>
+        </div>
+      </section>
+
+      <section id="chat-pane" class="chat hidden">
+        <header class="chat-header">
+          <div class="chat-title">
+            <h1 id="peer-title">群聊</h1>
+            <p id="peer-subtitle" class="muted"></p>
+          </div>
+          <button id="leave-button" type="button" class="danger">退出群组</button>
+        </header>
+
+        <div id="messages" class="messages"></div>
+
+        <form id="send-text" class="composer">
+          <div class="send-row">
             <input id="message-input" placeholder="输入文本消息" required />
-            <button type="submit">发送文本</button>
-          </form>
+            <button type="submit">发送</button>
+          </div>
+        </form>
 
-          <form id="send-file" class="composer">
+        <form id="send-file" class="composer">
+          <div class="file-row">
             <input id="file-input" type="file" />
-            <button type="submit">发送文件</button>
-            <input id="file-path" placeholder="文件绝对路径（选择文件后自动填充，必要时手动填写）" />
-          </form>
+            <input id="file-path" placeholder="文件绝对路径（必要时手动填写）" />
+            <button type="submit">发文件</button>
+          </div>
+        </form>
 
-          <h3>传输进度</h3>
-          <div id="transfers" class="list"></div>
-
-          <details>
-            <summary>事件日志</summary>
-            <pre id="events"></pre>
-          </details>
-        </section>
-      </div>
+        <details>
+          <summary>事件日志</summary>
+          <pre id="events"></pre>
+        </details>
+      </section>
     </main>
+
+    <dialog id="create-dialog">
+      <form id="create-group" class="modal">
+        <div class="modal-head">
+          <h1>新建群组</h1>
+          <button id="close-create" type="button" class="ghost">关闭</button>
+        </div>
+        <label>
+          网卡
+          <select id="create-bind-preset">
+            <option value="0.0.0.0:0">所有网卡</option>
+            <option value="127.0.0.1:0">本机测试</option>
+            <option value="">手动填写</option>
+          </select>
+        </label>
+        <label>
+          手动绑定地址
+          <input id="create-bind" placeholder="0.0.0.0:0" />
+        </label>
+        <label>
+          群组名称
+          <input id="group-name" placeholder="我的 LAN Mesh" />
+        </label>
+        <div id="network-interfaces" class="list"></div>
+        <button type="submit">创建并进入群组</button>
+      </form>
+    </dialog>
+
+    <dialog id="join-dialog">
+      <div class="modal">
+        <div class="modal-head">
+          <h1>加入群组</h1>
+          <button id="close-join" type="button" class="ghost">关闭</button>
+        </div>
+
+        <form id="discover-form" class="row">
+          <label>
+            发现监听地址
+            <select id="discover-bind">
+              <option value="0.0.0.0:37020">所有网卡</option>
+              <option value="127.0.0.1:37020">本机测试</option>
+            </select>
+          </label>
+          <label>
+            &nbsp;
+            <button type="submit" class="secondary">刷新发现</button>
+          </label>
+        </form>
+        <div id="relays" class="list"></div>
+
+        <form id="manual-join" class="modal">
+          <label>
+            发起连接网卡
+            <select id="join-interface">
+              <option value="">自动选择</option>
+            </select>
+          </label>
+          <label>
+            Group ID
+            <input id="manual-group-id" required />
+          </label>
+          <label>
+            Relay IP/端口
+            <input id="manual-relay-addr" placeholder="192.168.1.10:9000" required />
+          </label>
+          <label>
+            本地 IP（可选）
+            <input id="manual-local-ip" placeholder="192.168.1.20" />
+          </label>
+          <button type="submit">加入并进入群组</button>
+        </form>
+      </div>
+    </dialog>
+
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>
