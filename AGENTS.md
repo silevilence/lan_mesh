@@ -11,14 +11,32 @@
 - **序列化**:统一使用 JSON(serde + serde_json),不使用 Protobuf 等二进制格式。
 - **传输层**:TCP,应用层自行处理帧边界(长度前缀)。
 
+## 技术栈与版本约束
+
+| 项 | 选型 | 版本 | 硬约束 |
+|---|---|---|---|
+| 语言 | Rust | `edition = "2024"` | 全 crate 统一,不得降级 |
+| 异步运行时 | tokio(`features = full`) | 1.52.3 | 禁止引入 async-std 等其他运行时 |
+| 序列化 | serde + serde_json | 1.0.228 / 1.0.150 | 统一 JSON,禁止 Protobuf 等二进制格式 |
+| 消息类型区分 | serde 内部标签(`#[serde(tag = "type")]`) | - | 不使用外部标签或数字枚举 |
+| 唯一标识 | uuid(`v4`,`serde`) | 1.23.4 | 设备/群组/消息/文件/邻居 ID 一律走 UUID 封装类型,禁止裸用字符串 |
+| 文件分片编码 | base64 | 0.22.1 | 二进制分片内嵌 JSON(`#[serde(with = "base64_data")]`),全项目统一,禁止混用其他编码 |
+| 完整性校验 | sha2 | 0.10.9 | 文件接收完成后用 SHA256 校验 |
+| 帧格式 | 4 字节大端长度前缀 + JSON 体 | - | 长度前缀统一大端序,读写工具仅放在 `frame.rs`,不得在多处重复实现 |
+| Windows 客户端 | Tauri | 2 | 后端通过本地路径依赖 `core`,禁止在 `tauri-app` 内重实现网络/协议逻辑 |
+| 前端 | 原生 HTML + JavaScript | - | 无框架、无打包器;不引入重型状态管理库 |
+| 安装包 | NSIS | - | 通过 `scripts/dist.ps1` 瘦身构建 |
+
+关键常量(实际取值,修改前评估影响范围):`DEFAULT_TTL = 8`、`DISCOVERY_PORT = 37020`、`FILE_CHUNK_SIZE = 64 KiB`、`MAX_FRAME_LEN = 16 MiB`、消息去重缓存有效期 `MESSAGE_ID_TTL = 300s`。
+
 ## Workspace 结构
 
 ```
 /                       # workspace 根,仅包含 Cargo.toml(workspace 容器)与本文件
 ├── core/               # 核心通信库(lib crate),网络/协议/路由/文件传输逻辑,不含任何UI代码
-├── core-ffi/           # 供 Android JNI 绑定使用的 FFI 适配层,仅暴露 Leaf 角色能力
-├── tauri-app/          # Windows 客户端(Tauri 壳 + 前端)
-└── android-app/        # Android 客户端(Kotlin + Compose)
+├── core-ffi/           # 供 Android JNI 绑定使用的 FFI 适配层(当前为占位 crate,尚未实现)
+├── tauri-app/          # Windows 客户端(Tauri 2 壳 + 原生 JS 前端),已完成
+└── android-app/        # Android 客户端(Kotlin + Compose),规划中,尚未创建
 ```
 
 ## 通用规则
@@ -119,6 +137,32 @@ Refs: ROADMAP OPDS 书源服务构建与分发
 - 文件读写遵循分区存储(Scoped Storage)规范,不假设有任意路径的文件系统访问权限。
 - Android 端界面不提供"创建群组"入口,仅提供"加入群组"(自动发现 + 手动输入IP)。
 
+## 接口参考
+
+以下为当前已实现的公开接口,新增功能应复用而非重复实现。
+
+### core 公开 API(`core/src/lib.rs` re-export)
+
+- 标识类型:`DeviceId`、`GroupId`、`MessageId`、`FileId`、`NeighborId`(均基于 UUID 封装,`#[serde(transparent)]`)。
+- 角色与目标:`DeviceRole`(`Relay`/`Leaf`)、`MessageTarget`(`Broadcast`/`Device { device_id }`)。
+- 消息:`Message` 枚举(内部标签 `#[serde(tag = "type")]`),变体 `Text`/`FileChunk`/`FileResumeRequest`/`Heartbeat`/`MemberChanged`/`RouteDiscoveryRequest`/`RouteDiscoveryResponse`,各含 `header: MessageHeader` 与对应 payload。
+- 序列化辅助:`message_to_json`、`message_from_json`、`now_timestamp_ms`、`encode_file_chunk_data`、`decode_file_chunk_data`。
+- 帧(`frame.rs`):`MAX_FRAME_LEN`、`FrameError`、`write_message_frame`、`read_message_frame`。
+- 会话(`session.rs`):`Session` 关键方法 `new`/`with_config`/`create_group`/`join_group`/`subscribe`/`role`/`device_id`/`listen`/`connect`/`send_message`/`broadcast_message`/`route_message`/`send_group_message`/`send_direct_message`/`discover_route`/`routes`/`members`/`neighbors`/`announce_member_change`/`member_changed_message`/`start_relay_announcement`/`discover_relays`/`destroy`;事件类型 `SessionEvent`(`NeighborOnline`/`NeighborOffline`/`MessageReceived`);快照 `NeighborSnapshot`/`MemberSnapshot`/`RouteSnapshot`/`RelayAnnouncement`;配置与错误 `ConnectionConfig`/`NetworkError`。
+- 文件传输(`file_transfer.rs`):`FILE_CHUNK_SIZE`、`FileChunkReader`、`FileAssembler`、`FileAssemblyStatus`、`FileTransferError`、`resend_file_chunks`、`file_resume_request_message`、`sha256_file`。
+
+### Tauri commands(`tauri-app/src-tauri/src/commands.rs`)
+
+每个 command 仅做参数校验并转调 `core` 接口,不写业务逻辑:
+
+`create_group`、`discover_relays`、`join_group`、`close_session`、`send_group_text`、`send_direct_text`、`send_file`、`resume_file_transfer`、`request_file_resume`、`get_members`、`get_connection_status`、`list_network_interfaces`、`pick_file`、`save_file_as`。
+
+### 前端事件通道(`tauri-app/src-tauri/src/events.rs`)
+
+核心库事件经 `forward_events` 转发到前端,前端通过 `tauri.event.listen(...)` 订阅,禁止轮询:
+
+`mesh://neighbor-online`、`mesh://neighbor-offline`、`mesh://message-received`、`mesh://member-changed`、`mesh://transfer-progress`。
+
 ## 构建与验证命令
 
 ```bash
@@ -134,9 +178,19 @@ cd tauri-app && cargo tauri dev
 # Windows 客户端构建
 cd tauri-app && cargo tauri build
 
+# Windows 客户端瘦身发布构建(NSIS, opt-level=z / LTO / strip)
+cd tauri-app && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dist.ps1
+
 # Android 端 Rust 交叉编译产物生成(供 JNI 加载)
+# 注意:core-ffi 当前为占位 crate,此命令需待任务19实现 FFI 接口后才有意义
 cd core-ffi && cargo build --release --target <android-target>
 ```
+
+## 测试规范
+
+- 单元测试集中在 `core/src/session/tests.rs`,可直接访问会话内部状态,验证会话隔离、消息去重、路径发现等行为。
+- 运行:`cargo test -p core`。
+- 修改 `session.rs` 内部结构后,优先补/调对应测试,保证多会话状态隔离与路由行为不回归。
 
 ## 提交前检查清单
 
