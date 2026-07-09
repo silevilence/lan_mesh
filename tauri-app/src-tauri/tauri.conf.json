@@ -4,7 +4,9 @@
   "version": "0.1.0",
   "identifier": "dev.lanmesh.desktop",
   "build": {
-    "frontendDist": "../"
+    "beforeDevCommand": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-dist.ps1",
+    "beforeBuildCommand": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-dist.ps1",
+    "frontendDist": "../dist"
   },
   "app": {
     "withGlobalTauri": true,
@@ -21,6 +23,6 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all"
+    "targets": "nsis"
   }
 }
