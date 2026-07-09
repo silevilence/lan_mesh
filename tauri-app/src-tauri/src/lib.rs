@@ -729,23 +729,31 @@ fn system_network_interfaces() -> Vec<(String, IpAddr)> {
         .args([
             "-NoProfile",
             "-Command",
-            "Get-NetIPAddress -AddressFamily IPv4 | Where-Object {$_.IPAddress -and $_.IPAddress -notlike '169.254.*'} | ForEach-Object { \"$($_.InterfaceAlias)|$($_.IPAddress)\" }",
+            "[Console]::OutputEncoding=[Text.Encoding]::UTF8; $OutputEncoding=[Text.Encoding]::UTF8; Get-NetIPAddress -AddressFamily IPv4 | Where-Object {$_.IPAddress -and $_.IPAddress -notlike '169.254.*'} | ForEach-Object { \"$($_.InterfaceAlias)|$($_.IPAddress)\" }",
         ])
         .output();
     let Ok(output) = output else {
         return fallback_network_interfaces();
     };
+    let Ok(stdout) = String::from_utf8(output.stdout) else {
+        return fallback_network_interfaces();
+    };
+    let mut items = parse_network_interface_lines(&stdout);
+    items.sort();
+    items.dedup();
+    items
+}
+
+fn parse_network_interface_lines(stdout: &str) -> Vec<(String, IpAddr)> {
     let mut items = Vec::new();
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
+    for line in stdout.lines() {
         let Some((name, ip)) = line.split_once('|') else {
             continue;
         };
         if let Ok(ip) = ip.trim().parse::<IpAddr>() {
-            items.push((name.trim().to_string(), ip));
+            items.push((name.trim_start_matches('\u{feff}').trim().to_string(), ip));
         }
     }
-    items.sort();
-    items.dedup();
     items
 }
 
@@ -805,5 +813,13 @@ mod tests {
     fn advertised_addr_keeps_explicit_bind_address() {
         let addr = SocketAddr::from(([127, 0, 0, 1], 9000));
         assert_eq!(advertised_addr(addr), addr);
+    }
+
+    #[test]
+    fn network_interface_parser_keeps_utf8_names() {
+        assert_eq!(
+            parse_network_interface_lines("\u{feff}以太网 2|192.168.0.100\n"),
+            vec![("以太网 2".to_string(), IpAddr::from([192, 168, 0, 100]))]
+        );
     }
 }
