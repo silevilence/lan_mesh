@@ -1,11 +1,15 @@
 use lan_mesh_core::{
-    DeviceId, DeviceRole, FileChunkReader, FileId, GroupId, MemberChange, Message, MessageTarget,
-    NeighborId, RelayAnnouncement, RouteSnapshot, Session, SessionEvent,
+    DeviceId, DeviceRole, FileChunkReader, FileId, FileResumeRequestPayload, GroupId, MemberChange,
+    Message, MessageTarget, NeighborId, RelayAnnouncement, RouteSnapshot, Session, SessionEvent,
+    file_resume_request_message, resend_file_chunks,
 };
 use serde::Serialize;
 use std::{
+    collections::HashMap,
     net::UdpSocket as StdUdpSocket,
     net::{IpAddr, SocketAddr},
+    process::Command,
+    sync::Arc,
     time::Duration,
 };
 use tauri::{AppHandle, Emitter, State};
@@ -15,16 +19,25 @@ use uuid::Uuid;
 const DEFAULT_TTL: u8 = 8;
 const DISCOVERY_PORT: u16 = 37020;
 
+type SentFiles = Arc<Mutex<HashMap<FileId, SentFile>>>;
+
 #[derive(Default)]
 struct AppState {
     client: Mutex<Option<ClientSession>>,
     event_task: Mutex<Option<JoinHandle<()>>>,
+    sent_files: SentFiles,
 }
 
 #[derive(Clone)]
 struct ClientSession {
     session: Session,
     group_id: GroupId,
+}
+
+#[derive(Clone)]
+struct SentFile {
+    path: String,
+    target: MessageTarget,
 }
 
 #[derive(Serialize)]
@@ -76,6 +89,14 @@ struct ConnectionStatus {
     routes: Vec<RouteView>,
 }
 
+#[derive(Serialize)]
+struct NetworkInterfaceView {
+    name: String,
+    ip_addr: String,
+    bind_addr: String,
+    discovery_bind_addr: String,
+}
+
 #[derive(Clone, Serialize)]
 struct NeighborEvent {
     neighbor_id: String,
@@ -109,6 +130,12 @@ struct SendFileResponse {
     file_id: String,
     chunk_count: u32,
     total_size: u64,
+}
+
+#[derive(Serialize)]
+struct ResumeFileResponse {
+    file_id: String,
+    resent_chunks: usize,
 }
 
 #[tauri::command]
@@ -244,11 +271,11 @@ async fn send_file(
         None => MessageTarget::Broadcast,
     };
     let mut reader = FileChunkReader::open(
-        path,
+        &path,
         file_id,
         client.group_id,
         client.session.device_id(),
-        target,
+        target.clone(),
         DEFAULT_TTL,
     )
     .await
@@ -256,6 +283,13 @@ async fn send_file(
     let chunk_count = reader.chunk_count();
     let total_size = reader.total_size();
     let mut done_chunks = 0;
+    state.sent_files.lock().await.insert(
+        file_id,
+        SentFile {
+            path,
+            target: target.clone(),
+        },
+    );
 
     while let Some(message) = reader.next_message().await.map_err(err_string)? {
         client
@@ -283,6 +317,65 @@ async fn send_file(
         chunk_count,
         total_size,
     })
+}
+
+#[tauri::command]
+async fn resume_file_transfer(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    file_id: String,
+    missing_chunks: Vec<u32>,
+) -> Result<ResumeFileResponse, String> {
+    let client = current_session(&state).await?;
+    let request = FileResumeRequestPayload {
+        file_id: parse_file_id(&file_id)?,
+        missing_chunks,
+    };
+    let resent_chunks = resend_saved_chunks(
+        &app,
+        &client.session,
+        client.group_id,
+        &state.sent_files,
+        &request,
+    )
+    .await?;
+    Ok(ResumeFileResponse {
+        file_id,
+        resent_chunks,
+    })
+}
+
+#[tauri::command]
+async fn request_file_resume(
+    state: State<'_, AppState>,
+    file_id: String,
+    missing_chunks: Vec<u32>,
+    target_device_id: Option<String>,
+) -> Result<String, String> {
+    let client = current_session(&state).await?;
+    let target = match target_device_id
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        Some(value) => MessageTarget::Device {
+            device_id: parse_device_id(value)?,
+        },
+        None => MessageTarget::Broadcast,
+    };
+    let message = file_resume_request_message(
+        parse_file_id(&file_id)?,
+        missing_chunks,
+        client.group_id,
+        client.session.device_id(),
+        target,
+        DEFAULT_TTL,
+    );
+    client
+        .session
+        .route_message(message)
+        .await
+        .map_err(err_string)?;
+    Ok(file_id)
 }
 
 #[tauri::command]
@@ -332,6 +425,11 @@ async fn get_connection_status(state: State<'_, AppState>) -> Result<ConnectionS
     })
 }
 
+#[tauri::command]
+fn list_network_interfaces() -> Vec<NetworkInterfaceView> {
+    network_interfaces()
+}
+
 pub fn run() {
     tauri::Builder::default()
         .manage(AppState::default())
@@ -342,8 +440,11 @@ pub fn run() {
             send_group_text,
             send_direct_text,
             send_file,
+            resume_file_transfer,
+            request_file_resume,
             get_members,
             get_connection_status,
+            list_network_interfaces,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run LAN Mesh Tauri app");
@@ -356,7 +457,13 @@ async fn install_session(app: &AppHandle, state: &AppState, client: ClientSessio
     if let Some(old_client) = state.client.lock().await.replace(client.clone()) {
         old_client.session.destroy().await;
     }
-    let task = tokio::spawn(forward_events(app.clone(), client.session));
+    state.sent_files.lock().await.clear();
+    let task = tokio::spawn(forward_events(
+        app.clone(),
+        client.session,
+        client.group_id,
+        state.sent_files.clone(),
+    ));
     *state.event_task.lock().await = Some(task);
 }
 
@@ -369,14 +476,25 @@ async fn current_session(state: &AppState) -> Result<ClientSession, String> {
         .ok_or_else(|| "no active mesh session".to_string())
 }
 
-async fn forward_events(app: AppHandle, session: Session) {
+async fn forward_events(
+    app: AppHandle,
+    session: Session,
+    group_id: GroupId,
+    sent_files: SentFiles,
+) {
     let mut events = session.subscribe();
     while let Ok(event) = events.recv().await {
-        emit_event(&app, event);
+        emit_event(&app, &session, group_id, &sent_files, event).await;
     }
 }
 
-fn emit_event(app: &AppHandle, event: SessionEvent) {
+async fn emit_event(
+    app: &AppHandle,
+    session: &Session,
+    group_id: GroupId,
+    sent_files: &SentFiles,
+    event: SessionEvent,
+) {
     match event {
         SessionEvent::NeighborOnline {
             neighbor_id,
@@ -407,6 +525,9 @@ fn emit_event(app: &AppHandle, event: SessionEvent) {
             message,
         } => {
             emit_message_side_events(app, &message);
+            if let Message::FileResumeRequest { payload, .. } = &message {
+                let _ = resend_saved_chunks(app, session, group_id, sent_files, payload).await;
+            }
             let _ = app.emit(
                 "mesh://message-received",
                 MessageEvent {
@@ -416,6 +537,51 @@ fn emit_event(app: &AppHandle, event: SessionEvent) {
             );
         }
     }
+}
+
+async fn resend_saved_chunks(
+    app: &AppHandle,
+    session: &Session,
+    group_id: GroupId,
+    sent_files: &SentFiles,
+    request: &FileResumeRequestPayload,
+) -> Result<usize, String> {
+    let sent = sent_files
+        .lock()
+        .await
+        .get(&request.file_id)
+        .cloned()
+        .ok_or_else(|| "file is not available for resume".to_string())?;
+    let messages = resend_file_chunks(
+        &sent.path,
+        request,
+        group_id,
+        session.device_id(),
+        sent.target,
+        DEFAULT_TTL,
+    )
+    .await
+    .map_err(err_string)?;
+    let resent_chunks = messages.len();
+
+    for message in messages {
+        if let Message::FileChunk { payload, .. } = &message {
+            let _ = app.emit(
+                "mesh://transfer-progress",
+                TransferProgressEvent {
+                    file_id: id(payload.file_id.0),
+                    direction: "outgoing",
+                    chunk_index: payload.chunk_index,
+                    chunk_count: payload.chunk_count,
+                    done_chunks: payload.chunk_index + 1,
+                    total_size: payload.total_size,
+                },
+            );
+        }
+        session.route_message(message).await.map_err(err_string)?;
+    }
+
+    Ok(resent_chunks)
 }
 
 fn emit_message_side_events(app: &AppHandle, message: &Message) {
@@ -491,6 +657,12 @@ fn parse_device_id(value: &str) -> Result<DeviceId, String> {
         .map_err(|err| format!("invalid device_id: {err}"))
 }
 
+fn parse_file_id(value: &str) -> Result<FileId, String> {
+    Uuid::parse_str(value)
+        .map(FileId)
+        .map_err(|err| format!("invalid file_id: {err}"))
+}
+
 fn parse_group_id(value: &str) -> Result<GroupId, String> {
     Uuid::parse_str(value)
         .map(GroupId)
@@ -526,6 +698,80 @@ fn advertised_addr(local_addr: SocketAddr) -> SocketAddr {
         })
         .map(|addr| SocketAddr::new(addr.ip(), local_addr.port()))
         .unwrap_or(local_addr)
+}
+
+fn network_interfaces() -> Vec<NetworkInterfaceView> {
+    let mut items: Vec<_> = system_network_interfaces()
+        .into_iter()
+        .map(network_interface_view)
+        .collect();
+    if items.is_empty() {
+        items.push(network_interface_view((
+            "本机测试".to_string(),
+            IpAddr::from([127, 0, 0, 1]),
+        )));
+    }
+    items
+}
+
+fn network_interface_view((name, ip): (String, IpAddr)) -> NetworkInterfaceView {
+    NetworkInterfaceView {
+        name,
+        ip_addr: ip.to_string(),
+        bind_addr: SocketAddr::new(ip, 0).to_string(),
+        discovery_bind_addr: SocketAddr::new(ip, DISCOVERY_PORT).to_string(),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn system_network_interfaces() -> Vec<(String, IpAddr)> {
+    let output = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            "Get-NetIPAddress -AddressFamily IPv4 | Where-Object {$_.IPAddress -and $_.IPAddress -notlike '169.254.*'} | ForEach-Object { \"$($_.InterfaceAlias)|$($_.IPAddress)\" }",
+        ])
+        .output();
+    let Ok(output) = output else {
+        return fallback_network_interfaces();
+    };
+    let mut items = Vec::new();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let Some((name, ip)) = line.split_once('|') else {
+            continue;
+        };
+        if let Ok(ip) = ip.trim().parse::<IpAddr>() {
+            items.push((name.trim().to_string(), ip));
+        }
+    }
+    items.sort();
+    items.dedup();
+    items
+}
+
+#[cfg(not(target_os = "windows"))]
+fn system_network_interfaces() -> Vec<(String, IpAddr)> {
+    fallback_network_interfaces()
+}
+
+fn fallback_network_interfaces() -> Vec<(String, IpAddr)> {
+    let mut items = vec![("本机测试".to_string(), IpAddr::from([127, 0, 0, 1]))];
+    if let Some(ip) = outbound_ip() {
+        items.push(("当前出口网络".to_string(), ip));
+    }
+    items.sort();
+    items.dedup();
+    items
+}
+
+fn outbound_ip() -> Option<IpAddr> {
+    StdUdpSocket::bind(SocketAddr::from(([0, 0, 0, 0], 0)))
+        .and_then(|socket| {
+            socket.connect(SocketAddr::from(([8, 8, 8, 8], 80)))?;
+            socket.local_addr()
+        })
+        .map(|addr| addr.ip())
+        .ok()
 }
 
 fn id(uuid: Uuid) -> String {

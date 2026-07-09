@@ -108,6 +108,11 @@
         background: #fbfdff;
       }
 
+      .item progress {
+        width: 100%;
+        margin-top: 8px;
+      }
+
       .muted {
         color: #6b7a90;
         font-size: 12px;
@@ -180,6 +185,8 @@
       <div class="grid">
         <section class="card">
           <h2>群组管理</h2>
+          <h3>可用网卡</h3>
+          <div id="network-interfaces" class="list"></div>
 
           <form id="create-group">
             <h3>创建群组</h3>
@@ -220,6 +227,12 @@
           <form id="manual-join">
             <h3>手动加入</h3>
             <label>
+              发起连接网卡
+              <select id="join-interface">
+                <option value="">自动选择</option>
+              </select>
+            </label>
+            <label>
               Group ID
               <input id="manual-group-id" required />
             </label>
@@ -238,6 +251,8 @@
 
           <h3>成员</h3>
           <div id="members" class="list"></div>
+          <h3>邻居连接</h3>
+          <div id="neighbors" class="list"></div>
         </section>
 
         <section class="card">

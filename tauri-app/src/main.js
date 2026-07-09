@@ -16,8 +16,10 @@ const status = $("status");
 const events = $("events");
 const relays = $("relays");
 const members = $("members");
+const neighbors = $("neighbors");
 const messages = $("messages");
 const transfers = $("transfers");
+const networkInterfaces = $("network-interfaces");
 
 const text = (value) => String(value ?? "");
 const short = (value) => text(value).slice(0, 8);
@@ -42,6 +44,10 @@ async function call(command, args = {}) {
 
 function bindAddr() {
   return $("create-bind-preset").value || $("create-bind").value || "0.0.0.0:0";
+}
+
+function selectedLocalIp() {
+  return $("join-interface").value || $("manual-local-ip").value;
 }
 
 function setSession(session) {
@@ -78,9 +84,35 @@ function renderRelays(items) {
     addr.textContent = `relay=${relay.tcp_addr}`;
     button.type = "button";
     button.textContent = "加入";
-    button.addEventListener("click", () => join(relay.group_id, relay.tcp_addr));
+    button.addEventListener("click", () => join(relay.group_id, relay.tcp_addr, selectedLocalIp()));
     node.append(title, group, addr, button);
     relays.append(node);
+  }
+}
+
+function renderNetworkInterfaces(items) {
+  networkInterfaces.innerHTML = "";
+  const create = $("create-bind-preset");
+  const discover = $("discover-bind");
+  const joinSelect = $("join-interface");
+
+  for (const item of items) {
+    const node = document.createElement("div");
+    node.className = "item";
+    node.textContent = `${item.name} · ${item.ip_addr}`;
+    networkInterfaces.append(node);
+
+    create.add(new Option(`${item.name} (${item.ip_addr})`, item.bind_addr));
+    discover.add(new Option(`${item.name} (${item.ip_addr})`, item.discovery_bind_addr));
+    joinSelect.add(new Option(`${item.name} (${item.ip_addr})`, item.ip_addr));
+  }
+}
+
+async function loadNetworkInterfaces() {
+  try {
+    renderNetworkInterfaces(await call("list_network_interfaces"));
+  } catch (err) {
+    log("list_network_interfaces failed", text(err));
   }
 }
 
@@ -92,12 +124,34 @@ function routeLabel(member, routes, selfId) {
   return route.path.length <= 2 ? "直连可达" : `多跳可达(${route.path.length - 1}跳)`;
 }
 
+function renderNeighbors(items) {
+  neighbors.innerHTML = "";
+  if (!items.length) {
+    const empty = document.createElement("div");
+    empty.className = "muted";
+    empty.textContent = "暂无邻居连接";
+    neighbors.append(empty);
+    return;
+  }
+  for (const neighbor of items) {
+    const node = document.createElement("div");
+    node.className = "item";
+    node.textContent = `${short(neighbor.neighbor_id)} · ${neighbor.peer_addr}`;
+    const active = document.createElement("div");
+    active.className = "muted";
+    active.textContent = `最近活跃：${Math.round(neighbor.last_active_ms / 1000)} 秒前`;
+    node.append(active);
+    neighbors.append(node);
+  }
+}
+
 async function refreshMembers() {
   if (!state.session) return;
   const [memberList, statusSnapshot] = await Promise.all([
     call("get_members"),
     call("get_connection_status"),
   ]);
+  renderNeighbors(statusSnapshot.neighbors);
   members.innerHTML = "";
   for (const member of memberList.sort((a, b) => text(a.device_id).localeCompare(text(b.device_id)))) {
     const node = document.createElement("div");
@@ -193,13 +247,114 @@ function addIncoming(message) {
   pushMessage(state.groupMessages, item);
 }
 
+function formatBytes(value) {
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function missingChunks(item) {
+  if (item.chunks) {
+    return Array.from({ length: item.chunk_count || 0 }, (_, index) => index).filter((index) => !item.chunks.has(index));
+  }
+  const start = Math.min(item.done_chunks || 0, item.chunk_count || 0);
+  return Array.from({ length: (item.chunk_count || 0) - start }, (_, index) => start + index);
+}
+
+function transferredBytes(item) {
+  if (!item.chunk_count) return 0;
+  return Math.min(item.total_size, Math.ceil(item.total_size / item.chunk_count) * (item.done_chunks || 0));
+}
+
+function transferSpeed(item) {
+  const seconds = ((item.updatedAt || Date.now()) - item.firstSeen) / 1000;
+  return seconds > 0 ? transferredBytes(item) / seconds : 0;
+}
+
+function rememberTransfer(payload) {
+  const now = Date.now();
+  const old = state.transfers.get(payload.file_id) || { firstSeen: now };
+  const chunks = old.chunks || new Set();
+  chunks.add(payload.chunk_index);
+  const done_chunks = chunks.size;
+  state.transfers.set(payload.file_id, {
+    ...old,
+    ...payload,
+    chunks,
+    done_chunks,
+    updatedAt: now,
+    status: done_chunks >= payload.chunk_count ? "done" : "running",
+  });
+  renderTransfers();
+}
+
+function markInterruptedTransfers(reason) {
+  for (const item of state.transfers.values()) {
+    if (item.done_chunks < item.chunk_count) {
+      item.status = "failed";
+      item.error = reason;
+    }
+  }
+  renderTransfers();
+}
+
+function markLastOutgoingFailed(path, err) {
+  const item = Array.from(state.transfers.values())
+    .filter((transfer) => transfer.direction === "outgoing" && transfer.done_chunks < transfer.chunk_count)
+    .at(-1);
+  if (!item) return;
+  item.path = path;
+  item.status = "failed";
+  item.error = text(err);
+  renderTransfers();
+}
+
+async function retryTransfer(item) {
+  const missing = missingChunks(item);
+  if (!missing.length) return;
+  item.status = "running";
+  item.error = "";
+  renderTransfers();
+  if (item.direction === "outgoing") {
+    await call("resume_file_transfer", { fileId: item.file_id, missingChunks: missing });
+  } else {
+    await call("request_file_resume", { fileId: item.file_id, missingChunks: missing, targetDeviceId: null });
+  }
+}
+
 function renderTransfers() {
   transfers.innerHTML = "";
   for (const item of state.transfers.values()) {
     const done = item.chunk_count ? Math.round((item.done_chunks / item.chunk_count) * 100) : 0;
     const node = document.createElement("div");
     node.className = "item";
-    node.textContent = `${item.direction} ${short(item.file_id)} ${done}% (${item.done_chunks}/${item.chunk_count})`;
+    const title = document.createElement("strong");
+    const detail = document.createElement("div");
+    const progress = document.createElement("progress");
+    title.textContent = `${item.direction === "incoming" ? "接收" : "发送"} ${short(item.file_id)} · ${done}%`;
+    detail.className = "muted";
+    detail.textContent = `${item.done_chunks}/${item.chunk_count} 分片 · ${formatBytes(transferredBytes(item))}/${formatBytes(
+      item.total_size,
+    )} · ${formatBytes(Math.round(transferSpeed(item)))}/s${item.error ? ` · ${item.error}` : ""}`;
+    progress.max = item.chunk_count || 1;
+    progress.value = item.done_chunks || 0;
+    node.append(title, detail, progress);
+    if (item.status === "failed") {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "secondary";
+      button.textContent = item.direction === "incoming" ? "请求续传" : "重试续传";
+      button.addEventListener("click", async () => {
+        try {
+          await retryTransfer(item);
+        } catch (err) {
+          item.status = "failed";
+          item.error = text(err);
+          renderTransfers();
+        }
+      });
+      node.append(button);
+    }
     transfers.append(node);
   }
 }
@@ -241,7 +396,7 @@ $("discover-form").addEventListener("submit", async (event) => {
 $("manual-join").addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
-    await join($("manual-group-id").value, $("manual-relay-addr").value, $("manual-local-ip").value);
+    await join($("manual-group-id").value, $("manual-relay-addr").value, selectedLocalIp());
   } catch (err) {
     setStatus(`加入失败：${err}`);
   }
@@ -293,6 +448,7 @@ $("send-file").addEventListener("submit", async (event) => {
     item.status = `已送达 ${sent.chunk_count} 分片`;
   } catch (err) {
     item.status = `失败：${err}`;
+    markLastOutgoingFailed(path, err);
   }
   renderMessages();
 });
@@ -308,13 +464,16 @@ if (listen) {
     listen(name, ({ payload }) => {
       log(name, payload);
       if (name === "mesh://message-received") addIncoming(payload.message);
+      if (name === "mesh://neighbor-offline") markInterruptedTransfers("连接中断");
       if (name === "mesh://member-changed" || name.includes("neighbor")) refreshMembers();
-      if (name === "mesh://transfer-progress") {
-        state.transfers.set(payload.file_id, payload);
-        renderTransfers();
-      }
+      if (name === "mesh://transfer-progress") rememberTransfer(payload);
     });
   }
 }
 
+$("join-interface").addEventListener("change", () => {
+  $("manual-local-ip").value = $("join-interface").value;
+});
+
 openGroup();
+loadNetworkInterfaces();
