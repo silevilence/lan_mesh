@@ -84,6 +84,11 @@ jobs:
             cargo install tauri-cli --version "^2" --locked
           }
 
+      - name: Prepare frontend dist
+        if: steps.validate.outputs.run_release == 'true'
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tauri-app/scripts/prepare-dist.ps1
+
       - name: Build workspace
         if: steps.validate.outputs.run_release == 'true'
         run: cargo build
