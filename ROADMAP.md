@@ -341,3 +341,30 @@
             - 任务描述:只嵌入 index.html 与 main.js,避免递归打包源码目录。
         - [x] 使用 NSIS 单一安装器与 release 瘦身参数
             - 任务描述:通过 opt-level=z、LTO、strip、panic abort 缩小产物体积。
+
+- [x] **任务26:Github Actions自动发布支持**
+    - [x] 触发条件与版本校验
+        - [x] 实现监听形如 `V0.1.0` / `v0.1.0` 的 Git Tag 推送事件触发工作流
+            - 任务描述:Tag 大小写不敏感,通过正则 `^[vV]\d+\.\d+\.\d+$` 校验格式,不匹配时跳过执行。
+        - [x] 实现从 Tag 中提取版本号并与 `tauri-app/src-tauri/tauri.conf.json` 的 `version` 字段一致性校验
+            - 任务描述:不一致时直接失败结束,避免发布版本号与产物版本号错位。
+    - [x] CHANGELOG 提取
+        - [x] 建立并维护仓库根目录 `CHANGELOG.md`,约定各版本以二级标题(`## vX.Y.Z`)分段记录
+            - 任务描述:作为自动发布流程的说明文案来源,需在任务实施前补齐历史版本记录。
+        - [x] 实现从 `CHANGELOG.md` 中提取对应版本 Tag 的二级标题段落
+            - 任务描述:匹配到该版本二级标题后,取到下一个二级标题之前(或文件末尾)的内容;取不到时直接失败结束。
+    - [x] 编译与测试
+        - [x] 实现在 CI 环境中执行 `cargo build` 与 `cargo test -p core` 的步骤
+            - 任务描述:测试不通过时立即终止流程,不进入打包阶段。
+        - [x] 实现 Windows Runner 上的 Tauri 安装包构建
+            - 任务描述:复用 `tauri-app/scripts/dist.ps1` 的瘦身构建参数(LTO/opt-level=z/strip),仅生成 NSIS 安装器,不依赖本地开发环境。
+    - [x] 生成与上传 Github Release
+        - [x] 实现以提取的 CHANGELOG 段落为正文创建 Github Release
+            - 任务描述:Release 名称与 Tag 一致,草稿状态由配置决定;创建失败时工作流失败结束。
+        - [x] 实现将生成的 NSIS 安装包上传至对应 Release 的 Assets
+            - 任务描述:按 `LAN.Mesh_<version>_x64-setup.exe` 命名,上传失败时重试或失败结束。
+    - [x] 工作流配置与权限
+        - [x] 实现 `.github/workflows/release.yml` 工作流文件,声明所需 `permissions`(`contents: write`)
+            - 任务描述:确保 Token 有权创建 Release 与上传资源;禁止使用 `pull_request` 触发,仅由 Tag 推送触发。
+        - [x] 实现并发控制与缓存优化
+            - 任务描述:对同一 Tag 重复推送时取消旧运行;缓存 `~/.cargo` 与 `target` 目录加速后续构建。

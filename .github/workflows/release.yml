@@ -1,0 +1,154 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+      - "V*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RELEASE_DRAFT: "false"
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate tag and app version
+        id: validate
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          if ($tag -notmatch '^[vV]\d+\.\d+\.\d+$') {
+            "run_release=false" >> $env:GITHUB_OUTPUT
+            Write-Host "Skipping non-release tag: $tag"
+            exit 0
+          }
+
+          $version = $tag.Substring(1)
+          $config = Get-Content -Raw "tauri-app/src-tauri/tauri.conf.json" | ConvertFrom-Json
+          if ($config.version -ne $version) {
+            throw "Tag version $version does not match tauri.conf.json version $($config.version)."
+          }
+
+          "run_release=true" >> $env:GITHUB_OUTPUT
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Extract release notes
+        id: notes
+        if: steps.validate.outputs.run_release == 'true'
+        shell: pwsh
+        run: |
+          $tag = "${{ steps.validate.outputs.tag }}"
+          $content = Get-Content -Raw "CHANGELOG.md"
+          $pattern = "(?ims)^##\s+$([regex]::Escape($tag))\s*\r?\n(?<body>.*?)(?=^##\s+|\z)"
+          $match = [regex]::Match($content, $pattern)
+          if (-not $match.Success -or [string]::IsNullOrWhiteSpace($match.Groups["body"].Value)) {
+            throw "CHANGELOG.md does not contain release notes for $tag."
+          }
+
+          $notesPath = Join-Path $env:RUNNER_TEMP "release-notes.md"
+          Set-Content -Path $notesPath -Value $match.Groups["body"].Value.Trim() -Encoding utf8
+          "notes_path=$notesPath" >> $env:GITHUB_OUTPUT
+
+      - name: Cache cargo
+        if: steps.validate.outputs.run_release == 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin/cargo-tauri.exe
+            target
+            tauri-app/src-tauri/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Install Tauri CLI
+        if: steps.validate.outputs.run_release == 'true'
+        shell: pwsh
+        run: |
+          if (-not (Get-Command cargo-tauri -ErrorAction SilentlyContinue)) {
+            cargo install tauri-cli --version "^2" --locked
+          }
+
+      - name: Build workspace
+        if: steps.validate.outputs.run_release == 'true'
+        run: cargo build
+
+      - name: Test core
+        if: steps.validate.outputs.run_release == 'true'
+        run: cargo test -p core
+
+      - name: Build NSIS installer
+        if: steps.validate.outputs.run_release == 'true'
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tauri-app/scripts/dist.ps1
+
+      - name: Prepare release asset
+        id: asset
+        if: steps.validate.outputs.run_release == 'true'
+        shell: pwsh
+        run: |
+          $bundleDir = "tauri-app/src-tauri/target/release/bundle/nsis"
+          $installer = Get-ChildItem -Path $bundleDir -Filter "*setup.exe" -File |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+          if (-not $installer) {
+            throw "No NSIS setup.exe found in $bundleDir."
+          }
+
+          $assetName = "LAN.Mesh_${{ steps.validate.outputs.version }}_x64-setup.exe"
+          $assetPath = Join-Path $env:RUNNER_TEMP $assetName
+          Copy-Item -LiteralPath $installer.FullName -Destination $assetPath -Force
+          "asset_name=$assetName" >> $env:GITHUB_OUTPUT
+          "asset_path=$assetPath" >> $env:GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        if: steps.validate.outputs.run_release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.validate.outputs.tag }}
+          RELEASE_NOTES: ${{ steps.notes.outputs.notes_path }}
+        shell: pwsh
+        run: |
+          $args = @(
+            "release", "create", $env:RELEASE_TAG,
+            "--verify-tag",
+            "--title", $env:RELEASE_TAG,
+            "--notes-file", $env:RELEASE_NOTES
+          )
+          if (($env:RELEASE_DRAFT).ToLowerInvariant() -eq "true") {
+            $args += "--draft"
+          }
+          gh @args
+
+      - name: Upload release asset
+        if: steps.validate.outputs.run_release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.validate.outputs.tag }}
+          ASSET_PATH: ${{ steps.asset.outputs.asset_path }}
+          ASSET_NAME: ${{ steps.asset.outputs.asset_name }}
+        shell: pwsh
+        run: |
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            gh release upload $env:RELEASE_TAG "$env:ASSET_PATH#$env:ASSET_NAME" --clobber
+            if ($LASTEXITCODE -eq 0) {
+              exit 0
+            }
+            Start-Sleep -Seconds 5
+          }
+          exit 1
