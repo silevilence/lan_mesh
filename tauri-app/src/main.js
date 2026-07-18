@@ -617,6 +617,7 @@ async function retryTransfer(item) {
 
 async function checkForUpdate({ silent = false } = {}) {
   try {
+    if (!silent) setStatus("正在检查更新...");
     const update = await call("check_update");
     if (!update) {
       if (!silent) setStatus("已是最新版本");

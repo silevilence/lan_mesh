@@ -20,7 +20,6 @@ use lan_mesh_core::{
 use std::{
     net::{IpAddr, SocketAddr},
     path::Path,
-    process::Command,
     time::Duration,
 };
 use tauri::{AppHandle, Emitter, State};
@@ -433,27 +432,10 @@ async fn can_connect(
 #[tauri::command]
 pub(crate) async fn pick_file() -> Result<String, String> {
     tokio::task::spawn_blocking(|| {
-        #[cfg(target_os = "windows")]
-        {
-            let script = r#"Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.OpenFileDialog; if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $d.FileName }"#;
-            let output = Command::new("powershell")
-                .args(["-NoProfile", "-STA", "-Command", script])
-                .output()
-                .map_err(err_string)?;
-            if !output.status.success() {
-                return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
-            }
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if path.is_empty() {
-                Err("未选择文件".to_string())
-            } else {
-                Ok(path)
-            }
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            Err("当前平台未实现文件选择，请手动填写绝对路径".to_string())
-        }
+        rfd::FileDialog::new()
+            .pick_file()
+            .map(path_string)
+            .ok_or_else(|| "未选择文件".to_string())
     })
     .await
     .map_err(err_string)?
@@ -479,52 +461,17 @@ pub(crate) async fn save_file_as(
 }
 
 async fn pick_save_path(file_name: String) -> Result<String, String> {
-    let default_ext = file_extension(&file_name);
     tokio::task::spawn_blocking(move || {
-        #[cfg(target_os = "windows")]
-        {
-            let script = r#"Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.SaveFileDialog; $d.FileName = [Environment]::GetEnvironmentVariable('LAN_MESH_FILE_NAME'); $d.AddExtension = $true; $ext = [Environment]::GetEnvironmentVariable('LAN_MESH_DEFAULT_EXT'); if ($ext) { $d.DefaultExt = $ext }; if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $d.FileName }"#;
-            let output = Command::new("powershell")
-                .env("LAN_MESH_FILE_NAME", file_name)
-                .env("LAN_MESH_DEFAULT_EXT", default_ext)
-                .args(["-NoProfile", "-STA", "-Command", script])
-                .output()
-                .map_err(err_string)?;
-            if !output.status.success() {
-                return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
-            }
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if path.is_empty() {
-                Err("未选择保存位置".to_string())
-            } else {
-                Ok(path)
-            }
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            Err("当前平台未实现另存为".to_string())
-        }
+        rfd::FileDialog::new()
+            .set_file_name(file_name)
+            .save_file()
+            .map(path_string)
+            .ok_or_else(|| "未选择保存位置".to_string())
     })
     .await
     .map_err(err_string)?
 }
 
-fn file_extension(file_name: &str) -> String {
-    Path::new(file_name)
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .unwrap_or("")
-        .to_string()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn save_dialog_default_extension_uses_suffix() {
-        assert_eq!(file_extension("hello.txt"), "txt");
-        assert_eq!(file_extension("archive.tar.gz"), "gz");
-        assert_eq!(file_extension("README"), "");
-    }
+fn path_string(path: std::path::PathBuf) -> String {
+    path.to_string_lossy().into_owned()
 }

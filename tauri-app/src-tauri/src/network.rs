@@ -2,7 +2,6 @@ use crate::{DISCOVERY_PORT, views::NetworkInterfaceView};
 use std::{
     net::UdpSocket as StdUdpSocket,
     net::{IpAddr, SocketAddr},
-    process::Command,
 };
 
 pub(crate) fn parse_socket_addr(value: &str) -> Result<SocketAddr, String> {
@@ -76,43 +75,22 @@ fn network_interface_view((name, ip): (String, IpAddr)) -> NetworkInterfaceView 
     }
 }
 
-#[cfg(target_os = "windows")]
 fn system_network_interfaces() -> Vec<(String, IpAddr)> {
-    let output = Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-Command",
-            "[Console]::OutputEncoding=[Text.Encoding]::UTF8; $OutputEncoding=[Text.Encoding]::UTF8; Get-NetIPAddress -AddressFamily IPv4 | Where-Object {$_.IPAddress -and $_.IPAddress -notlike '169.254.*'} | ForEach-Object { \"$($_.InterfaceAlias)|$($_.IPAddress)\" }",
-        ])
-        .output();
-    let Ok(output) = output else {
+    let Ok(interfaces) = if_addrs::get_if_addrs() else {
         return fallback_network_interfaces();
     };
-    let Ok(stdout) = String::from_utf8(output.stdout) else {
-        return fallback_network_interfaces();
-    };
-    let mut items = parse_network_interface_lines(&stdout);
+    let mut items: Vec<_> = interfaces
+        .into_iter()
+        .filter_map(|interface| match interface.addr {
+            if_addrs::IfAddr::V4(addr) if !addr.ip.is_link_local() => {
+                Some((interface.name, addr.ip.into()))
+            }
+            _ => None,
+        })
+        .collect();
     items.sort();
     items.dedup();
     items
-}
-
-fn parse_network_interface_lines(stdout: &str) -> Vec<(String, IpAddr)> {
-    let mut items = Vec::new();
-    for line in stdout.lines() {
-        let Some((name, ip)) = line.split_once('|') else {
-            continue;
-        };
-        if let Ok(ip) = ip.trim().parse::<IpAddr>() {
-            items.push((name.trim_start_matches('\u{feff}').trim().to_string(), ip));
-        }
-    }
-    items
-}
-
-#[cfg(not(target_os = "windows"))]
-fn system_network_interfaces() -> Vec<(String, IpAddr)> {
-    fallback_network_interfaces()
 }
 
 fn fallback_network_interfaces() -> Vec<(String, IpAddr)> {
@@ -151,14 +129,6 @@ mod tests {
         assert_eq!(
             announcement_targets(addr),
             vec![(SocketAddr::from(([127, 0, 0, 1], 0)), addr)]
-        );
-    }
-
-    #[test]
-    fn network_interface_parser_keeps_utf8_names() {
-        assert_eq!(
-            parse_network_interface_lines("\u{feff}以太网 2|192.168.0.100\n"),
-            vec![("以太网 2".to_string(), IpAddr::from([192, 168, 0, 100]))]
         );
     }
 }
