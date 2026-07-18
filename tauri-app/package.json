@@ -1,9 +1,9 @@
 {
   "scripts": {
-    "prepare:dist": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-dist.ps1",
+    "prepare:dist": "pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-dist.ps1",
     "tauri": "cargo tauri",
     "dev": "cargo tauri dev",
     "build": "cargo tauri build",
-    "dist": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dist.ps1"
+    "dist": "pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/dist.ps1"
   }
 }

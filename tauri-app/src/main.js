@@ -615,6 +615,34 @@ async function retryTransfer(item) {
   }
 }
 
+async function checkForUpdate({ silent = false } = {}) {
+  try {
+    const update = await call("check_update");
+    if (!update) {
+      if (!silent) setStatus("已是最新版本");
+      return;
+    }
+
+    const notes = text(update.body).trim();
+    const message = [
+      `发现新版本 ${update.version}`,
+      update.date ? `发布时间：${update.date}` : "",
+      notes ? `\n更新说明：\n${notes.slice(0, 600)}` : "",
+      "\n是否现在下载并安装？安装时程序会退出。",
+    ].filter(Boolean).join("\n");
+
+    if (!confirm(message)) {
+      setStatus(`发现新版本 ${update.version}，已暂不安装`);
+      return;
+    }
+
+    setStatus(`正在下载更新 ${update.version}...`);
+    await call("install_update");
+  } catch (err) {
+    if (!silent) setStatus(`检查更新失败：${err}`);
+  }
+}
+
 function renderTransfers() {
   transfers.innerHTML = "";
   for (const item of state.transfers.values()) {
@@ -669,6 +697,7 @@ $("close-join").addEventListener("click", () => closeDialog("join-dialog"));
 $("close-share").addEventListener("click", () => closeDialog("share-dialog"));
 $("leave-button").addEventListener("click", closeCurrentSession);
 $("share-button").addEventListener("click", openShareDialog);
+$("check-update").addEventListener("click", () => checkForUpdate());
 $("parse-share-code").addEventListener("click", parseShareIntoJoinForm);
 $("copy-share-code").addEventListener("click", () => copyText($("share-code-output").value));
 $("copy-share-text").addEventListener("click", () => copyText(shareText(sharePayload())));
@@ -771,6 +800,7 @@ if (listen) {
     "mesh://message-received",
     "mesh://member-changed",
     "mesh://transfer-progress",
+    "mesh://update-progress",
   ]) {
     listen(name, ({ payload }) => {
       log(name, payload);
@@ -787,9 +817,14 @@ if (listen) {
       }
       if (name === "mesh://member-changed" || name.includes("neighbor")) refreshMembers();
       if (name === "mesh://transfer-progress") rememberTransfer(payload);
+      if (name === "mesh://update-progress") {
+        const total = payload.contentLength ? `/${formatBytes(payload.contentLength)}` : "";
+        setStatus(payload.finished ? "更新已下载，正在安装..." : `更新下载中：${formatBytes(payload.downloaded)}${total}`);
+      }
     });
   }
 }
 
 renderAll();
 loadNetworkInterfaces();
+checkForUpdate({ silent: true });

@@ -41,6 +41,12 @@ jobs:
             throw "Tag version $version does not match tauri.conf.json version $($config.version)."
           }
 
+          $cargoToml = Get-Content -Raw "tauri-app/src-tauri/Cargo.toml"
+          $cargoVersion = [regex]::Match($cargoToml, '(?ms)^\[package\].*?^version\s*=\s*"(?<version>[^"]+)"')
+          if (-not $cargoVersion.Success -or $cargoVersion.Groups["version"].Value -ne $version) {
+            throw "Tag version $version does not match tauri-app/src-tauri/Cargo.toml package version."
+          }
+
           "run_release=true" >> $env:GITHUB_OUTPUT
           "tag=$tag" >> $env:GITHUB_OUTPUT
           "version=$version" >> $env:GITHUB_OUTPUT
@@ -87,7 +93,7 @@ jobs:
       - name: Prepare frontend dist
         if: steps.validate.outputs.run_release == 'true'
         shell: pwsh
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File tauri-app/scripts/prepare-dist.ps1
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File tauri-app/scripts/prepare-dist.ps1
 
       - name: Build workspace
         if: steps.validate.outputs.run_release == 'true'
@@ -97,12 +103,29 @@ jobs:
         if: steps.validate.outputs.run_release == 'true'
         run: cargo test -p core
 
+      - name: Validate updater signing secrets
+        if: steps.validate.outputs.run_release == 'true'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) {
+            throw "Missing TAURI_SIGNING_PRIVATE_KEY repository secret."
+          }
+          if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD)) {
+            throw "Missing TAURI_SIGNING_PRIVATE_KEY_PASSWORD repository secret."
+          }
+
       - name: Build NSIS installer
         if: steps.validate.outputs.run_release == 'true'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         shell: pwsh
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File tauri-app/scripts/dist.ps1
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File tauri-app/scripts/dist.ps1
 
-      - name: Prepare release asset
+      - name: Prepare release assets
         id: asset
         if: steps.validate.outputs.run_release == 'true'
         shell: pwsh
@@ -117,12 +140,39 @@ jobs:
           if (-not $installer) {
             throw "No NSIS setup.exe found in $($bundleDirs -join ', ')."
           }
+          $signature = Get-Item -LiteralPath "$($installer.FullName).sig" -ErrorAction SilentlyContinue
+          if (-not $signature) {
+            throw "No updater signature found beside $($installer.FullName)."
+          }
 
           $assetName = "LAN.Mesh_${{ steps.validate.outputs.version }}_x64-setup.exe"
           $assetPath = Join-Path $env:RUNNER_TEMP $assetName
+          $signatureName = "$assetName.sig"
+          $signaturePath = Join-Path $env:RUNNER_TEMP $signatureName
+          $latestJsonPath = Join-Path $env:RUNNER_TEMP "latest.json"
+          $downloadUrl = "https://github.com/${{ github.repository }}/releases/latest/download/$assetName"
+          $signatureContent = (Get-Content -Raw -LiteralPath $signature.FullName).Trim()
+          $notes = Get-Content -Raw -LiteralPath "${{ steps.notes.outputs.notes_path }}"
+
           Copy-Item -LiteralPath $installer.FullName -Destination $assetPath -Force
+          Copy-Item -LiteralPath $signature.FullName -Destination $signaturePath -Force
+          @{
+            version = "${{ steps.validate.outputs.version }}"
+            notes = $notes.Trim()
+            pub_date = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+            platforms = @{
+              "windows-x86_64" = @{
+                signature = $signatureContent
+                url = $downloadUrl
+              }
+            }
+          } | ConvertTo-Json -Depth 5 | Set-Content -Path $latestJsonPath -Encoding utf8
+
           "asset_name=$assetName" >> $env:GITHUB_OUTPUT
           "asset_path=$assetPath" >> $env:GITHUB_OUTPUT
+          "signature_name=$signatureName" >> $env:GITHUB_OUTPUT
+          "signature_path=$signaturePath" >> $env:GITHUB_OUTPUT
+          "latest_json_path=$latestJsonPath" >> $env:GITHUB_OUTPUT
 
       - name: Create GitHub Release
         if: steps.validate.outputs.run_release == 'true'
@@ -143,17 +193,24 @@ jobs:
           }
           gh @args
 
-      - name: Upload release asset
+      - name: Upload release assets
         if: steps.validate.outputs.run_release == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.validate.outputs.tag }}
           ASSET_PATH: ${{ steps.asset.outputs.asset_path }}
           ASSET_NAME: ${{ steps.asset.outputs.asset_name }}
+          SIGNATURE_PATH: ${{ steps.asset.outputs.signature_path }}
+          SIGNATURE_NAME: ${{ steps.asset.outputs.signature_name }}
+          LATEST_JSON_PATH: ${{ steps.asset.outputs.latest_json_path }}
         shell: pwsh
         run: |
           for ($attempt = 1; $attempt -le 3; $attempt++) {
-            gh release upload $env:RELEASE_TAG "$env:ASSET_PATH#$env:ASSET_NAME" --clobber
+            gh release upload $env:RELEASE_TAG `
+              "$env:ASSET_PATH#$env:ASSET_NAME" `
+              "$env:SIGNATURE_PATH#$env:SIGNATURE_NAME" `
+              "$env:LATEST_JSON_PATH#latest.json" `
+              --clobber
             if ($LASTEXITCODE -eq 0) {
               exit 0
             }
