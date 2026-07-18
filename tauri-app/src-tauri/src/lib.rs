@@ -24,6 +24,7 @@ pub fn run() {
             commands::get_members,
             commands::get_connection_status,
             commands::list_network_interfaces,
+            commands::probe_relay_addr,
             commands::pick_file,
             commands::save_file_as,
         ])

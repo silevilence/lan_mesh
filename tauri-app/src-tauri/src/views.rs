@@ -61,6 +61,12 @@ pub(crate) struct NetworkInterfaceView {
     pub(crate) discovery_bind_addr: String,
 }
 
+#[derive(Serialize)]
+pub(crate) struct ProbeRelayResponse {
+    pub(crate) relay_addr: String,
+    pub(crate) local_ip: Option<String>,
+}
+
 #[derive(Clone, Serialize)]
 pub(crate) struct NeighborEvent {
     pub(crate) neighbor_id: String,

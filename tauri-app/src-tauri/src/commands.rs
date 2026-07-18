@@ -8,17 +8,23 @@ use crate::{
     network::{announcement_targets, network_interfaces, parse_socket_addr},
     state::{AppState, ClientSession, SentFile, current_session, install_session},
     views::{
-        ConnectionStatus, MemberView, NeighborView, NetworkInterfaceView, RelayAnnouncementView,
-        ResumeFileResponse, SendFileResponse, SessionResponse, TransferProgressEvent, relay_view,
-        route_view, session_response,
+        ConnectionStatus, MemberView, NeighborView, NetworkInterfaceView, ProbeRelayResponse,
+        RelayAnnouncementView, ResumeFileResponse, SendFileResponse, SessionResponse,
+        TransferProgressEvent, relay_view, route_view, session_response,
     },
 };
 use lan_mesh_core::{
     DeviceId, DeviceRole, FileChunkReader, FileId, FileResumeRequestPayload, GroupId,
     MessageTarget, Session, file_resume_request_message,
 };
-use std::{net::SocketAddr, path::Path, process::Command, time::Duration};
+use std::{
+    net::{IpAddr, SocketAddr},
+    path::Path,
+    process::Command,
+    time::Duration,
+};
 use tauri::{AppHandle, Emitter, State};
+use tokio::{net::TcpSocket, time::timeout};
 
 #[tauri::command]
 pub(crate) async fn create_group(
@@ -359,6 +365,72 @@ pub(crate) fn list_network_interfaces() -> Vec<NetworkInterfaceView> {
 }
 
 #[tauri::command]
+pub(crate) async fn probe_relay_addr(
+    relay_addrs: Vec<String>,
+    local_ips: Vec<String>,
+    timeout_ms: Option<u64>,
+) -> Result<ProbeRelayResponse, String> {
+    let timeout_duration = Duration::from_millis(timeout_ms.unwrap_or(250).clamp(50, 2000));
+    let relay_addrs: Vec<_> = relay_addrs
+        .into_iter()
+        .filter_map(|value| parse_socket_addr(&value).ok())
+        .collect();
+    if relay_addrs.is_empty() {
+        return Err("分享码里没有有效的 Relay 地址".to_string());
+    }
+
+    let mut local_ips: Vec<_> = local_ips
+        .into_iter()
+        .filter_map(|value| value.parse::<IpAddr>().ok())
+        .collect();
+    local_ips.sort();
+    local_ips.dedup();
+
+    for relay_addr in relay_addrs {
+        for local_ip in &local_ips {
+            if can_connect(relay_addr, Some(*local_ip), timeout_duration).await {
+                return Ok(ProbeRelayResponse {
+                    relay_addr: relay_addr.to_string(),
+                    local_ip: Some(local_ip.to_string()),
+                });
+            }
+        }
+        if can_connect(relay_addr, None, timeout_duration).await {
+            return Ok(ProbeRelayResponse {
+                relay_addr: relay_addr.to_string(),
+                local_ip: None,
+            });
+        }
+    }
+
+    Err("分享码中的地址当前都连不上".to_string())
+}
+
+async fn can_connect(
+    addr: SocketAddr,
+    local_ip: Option<IpAddr>,
+    timeout_duration: Duration,
+) -> bool {
+    let socket = match addr {
+        SocketAddr::V4(_) => TcpSocket::new_v4(),
+        SocketAddr::V6(_) => TcpSocket::new_v6(),
+    };
+    let Ok(socket) = socket else {
+        return false;
+    };
+    if let Some(local_ip) = local_ip {
+        if local_ip.is_ipv4() != addr.is_ipv4()
+            || socket.bind(SocketAddr::new(local_ip, 0)).is_err()
+        {
+            return false;
+        }
+    }
+    timeout(timeout_duration, socket.connect(addr))
+        .await
+        .is_ok_and(|result| result.is_ok())
+}
+
+#[tauri::command]
 pub(crate) async fn pick_file() -> Result<String, String> {
     tokio::task::spawn_blocking(|| {
         #[cfg(target_os = "windows")]
@@ -407,12 +479,14 @@ pub(crate) async fn save_file_as(
 }
 
 async fn pick_save_path(file_name: String) -> Result<String, String> {
+    let default_ext = file_extension(&file_name);
     tokio::task::spawn_blocking(move || {
         #[cfg(target_os = "windows")]
         {
-            let script = r#"Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.SaveFileDialog; $d.FileName = [Environment]::GetEnvironmentVariable('LAN_MESH_FILE_NAME'); if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $d.FileName }"#;
+            let script = r#"Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.SaveFileDialog; $d.FileName = [Environment]::GetEnvironmentVariable('LAN_MESH_FILE_NAME'); $d.AddExtension = $true; $ext = [Environment]::GetEnvironmentVariable('LAN_MESH_DEFAULT_EXT'); if ($ext) { $d.DefaultExt = $ext }; if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $d.FileName }"#;
             let output = Command::new("powershell")
                 .env("LAN_MESH_FILE_NAME", file_name)
+                .env("LAN_MESH_DEFAULT_EXT", default_ext)
                 .args(["-NoProfile", "-STA", "-Command", script])
                 .output()
                 .map_err(err_string)?;
@@ -433,4 +507,24 @@ async fn pick_save_path(file_name: String) -> Result<String, String> {
     })
     .await
     .map_err(err_string)?
+}
+
+fn file_extension(file_name: &str) -> String {
+    Path::new(file_name)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn save_dialog_default_extension_uses_suffix() {
+        assert_eq!(file_extension("hello.txt"), "txt");
+        assert_eq!(file_extension("archive.tar.gz"), "gz");
+        assert_eq!(file_extension("README"), "");
+    }
 }

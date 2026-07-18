@@ -58,12 +58,18 @@
       }
 
       input,
-      select {
+      select,
+      textarea {
         width: 100%;
         border: 1px solid #d3deeb;
         border-radius: 12px;
         padding: 10px 12px;
         background: white;
+      }
+
+      textarea {
+        min-height: 86px;
+        resize: vertical;
       }
 
       label {
@@ -232,6 +238,12 @@
         border-bottom: 1px solid #dbe4ef;
       }
 
+      .chat-actions {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+      }
+
       .chat-title {
         display: grid;
         gap: 4px;
@@ -323,6 +335,17 @@
         align-items: center;
       }
 
+      .hint {
+        color: #6b7789;
+        font-size: 12px;
+        line-height: 1.5;
+      }
+
+      .share-code {
+        font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+        word-break: break-all;
+      }
+
       .row {
         display: grid;
         grid-template-columns: 1fr 1fr;
@@ -400,7 +423,10 @@
             <h1 id="peer-title">群聊</h1>
             <p id="peer-subtitle" class="muted"></p>
           </div>
-          <button id="leave-button" type="button" class="danger">退出群组</button>
+          <div class="chat-actions">
+            <button id="share-button" type="button" class="secondary hidden">连接信息</button>
+            <button id="leave-button" type="button" class="danger">退出群组</button>
+          </div>
         </header>
 
         <div id="messages" class="messages"></div>
@@ -464,6 +490,7 @@
         <form id="discover-form" class="row" autocomplete="off">
           <label>
             发现监听地址
+            <span class="hint">用于自动发现 Relay；“所有网卡”会监听各网卡上的公告。</span>
             <select id="discover-bind">
               <option value="0.0.0.0:37020">所有网卡</option>
               <option value="127.0.0.1:37020">本机测试</option>
@@ -476,27 +503,60 @@
         </form>
         <div id="relays" class="list"></div>
 
+        <section>
+          <label>
+            一键分享码
+            <span class="hint">粘贴建群方分享的 lanmesh:Base64 文本，会自动解析并选择可连的 Relay 地址。</span>
+            <textarea id="share-code-input" class="share-code" placeholder="lanmesh:eyJ2ZXJzaW9uIjoxLC4uLg==" autocomplete="off" spellcheck="false"></textarea>
+          </label>
+          <button id="parse-share-code" type="button" class="secondary">解析分享码并填入</button>
+        </section>
+
         <form id="manual-join" class="modal" autocomplete="off">
+          <input id="manual-group-name" type="hidden" />
           <label>
             发起连接网卡
+            <span class="hint">通常选“自动选择”；分享码解析成功时会填入探测到可用的本机网卡。</span>
             <select id="join-interface">
               <option value="">自动选择</option>
             </select>
           </label>
           <label>
             Group ID
+            <span class="hint">由建群方提供的完整群组 UUID。</span>
             <input id="manual-group-id" autocomplete="off" spellcheck="false" required />
           </label>
           <label>
             Relay IP/端口
+            <span class="hint">填写建群方“连接信息”里的某个可连接地址，例如 192.168.1.10:50185。</span>
             <input id="manual-relay-addr" placeholder="192.168.1.10:9000" autocomplete="off" spellcheck="false" required />
           </label>
           <label>
             本地 IP（可选）
+            <span class="hint">需要指定从哪张网卡发起连接时填写；留空则由系统路由决定。</span>
             <input id="manual-local-ip" placeholder="192.168.1.20" autocomplete="off" spellcheck="false" />
           </label>
           <button type="submit">加入并进入群组</button>
         </form>
+      </div>
+    </dialog>
+
+    <dialog id="share-dialog">
+      <div class="modal">
+        <div class="modal-head">
+          <h1>连接信息</h1>
+          <button id="close-share" type="button" class="ghost">关闭</button>
+        </div>
+        <p id="share-summary" class="hint"></p>
+        <div id="share-addresses" class="list"></div>
+        <label>
+          一键分享码
+          <textarea id="share-code-output" class="share-code" readonly></textarea>
+        </label>
+        <div class="row">
+          <button id="copy-share-code" type="button">复制分享码</button>
+          <button id="copy-share-text" type="button" class="secondary">复制明文信息</button>
+        </div>
       </div>
     </dialog>
 

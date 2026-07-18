@@ -12,6 +12,8 @@ const state = {
   members: [],
   routes: [],
   relays: [],
+  networkInterfaces: [],
+  pendingJoinGroupName: "",
   groupMessages: [],
   directMessages: new Map(),
   transfers: new Map(),
@@ -24,6 +26,26 @@ const headerOf = (message) => message?.header ?? {};
 const payloadOf = (message) => message?.payload ?? {};
 const sourceOf = (message) => headerOf(message).source_device_id ?? headerOf(message).sourceDeviceId;
 const targetOf = (message) => headerOf(message).target ?? {};
+const groupNameOf = (session) => session?.group_name || "群聊";
+const isLoopback = (ip) => ip === "127.0.0.1" || ip?.startsWith("127.");
+
+function parseHostPort(value) {
+  const raw = text(value).trim();
+  const index = raw.lastIndexOf(":");
+  if (index <= 0) return {};
+  return { host: raw.slice(0, index), port: raw.slice(index + 1) };
+}
+
+function encodeShare(value) {
+  const bytes = new TextEncoder().encode(JSON.stringify(value));
+  return `lanmesh:${btoa(String.fromCharCode(...bytes))}`;
+}
+
+function decodeShare(value) {
+  const code = text(value).trim().replace(/^lanmesh:/i, "");
+  const bytes = Uint8Array.from(atob(code), (char) => char.charCodeAt(0));
+  return JSON.parse(new TextDecoder().decode(bytes));
+}
 
 const status = $("status");
 const sessionList = $("session-list");
@@ -70,7 +92,9 @@ function sessionLabel() {
   return `${role} · ${short(state.session.device_id)} · ${short(state.session.group_id)}${addr}`;
 }
 
-function setSession(session) {
+function setSession(session, groupName = "") {
+  session.group_name = groupName || session.group_name || state.pendingJoinGroupName || groupNameOf(session);
+  state.pendingJoinGroupName = "";
   state.session = session;
   state.selected = { type: "group" };
   state.members = [];
@@ -80,6 +104,7 @@ function setSession(session) {
   state.transfers.clear();
   setStatus(sessionLabel());
   $("manual-group-id").value = session.group_id;
+  $("manual-group-name").value = session.group_name;
   refreshMembers();
   renderAll();
 }
@@ -116,7 +141,7 @@ function renderSessionList() {
     node.className = `item clickable ${state.selected?.type === "group" ? "active" : ""}`;
     node.innerHTML = `
       <div class="item-head">
-        <span class="title">群聊 · ${short(state.session.group_id)}</span>
+        <span class="title">${groupNameOf(state.session)}</span>
         <span class="badge">${state.session.role === "relay" ? "我创建的" : "已加入"}</span>
       </div>
       <div class="muted">${sessionLabel()}</div>
@@ -135,7 +160,7 @@ function renderSessionList() {
         <span class="title">${relay.group_name || "LAN Mesh"}</span>
         <span class="badge">可加入</span>
       </div>
-      <div class="muted">${short(relay.group_id)} · ${relay.tcp_addr}</div>
+      <div class="muted">Group ${short(relay.group_id)} · ${relay.tcp_addr}</div>
     `;
     node.addEventListener("click", () => openJoinDialog(relay));
     sessionList.append(node);
@@ -213,9 +238,10 @@ function renderConversation() {
   if (!hasSelection) return;
 
   const isGroup = state.selected.type === "group";
-  $("peer-title").textContent = isGroup ? "群聊" : `单聊 ${short(state.selected.id)}`;
+  $("peer-title").textContent = isGroup ? groupNameOf(state.session) : `单聊 ${short(state.selected.id)}`;
   $("peer-subtitle").textContent = isGroup ? sessionLabel() : state.selected.id;
   $("leave-button").textContent = state.session.role === "relay" ? "解散群组" : "退出群组";
+  $("share-button").classList.toggle("hidden", !(isGroup && state.session.role === "relay"));
   renderMessages();
 }
 
@@ -322,6 +348,7 @@ function relayState(relay) {
 function fillJoinForm(relay) {
   $("manual-group-id").value = relay.group_id;
   $("manual-relay-addr").value = relay.tcp_addr;
+  $("manual-group-name").value = relay.group_name || "群聊";
 }
 
 function openJoinDialog(relay = null) {
@@ -330,6 +357,7 @@ function openJoinDialog(relay = null) {
 }
 
 function renderNetworkInterfaces(items) {
+  state.networkInterfaces = items;
   const networkInterfaces = $("network-interfaces");
   const create = $("create-bind-preset");
   const discover = $("discover-bind");
@@ -358,6 +386,105 @@ async function loadNetworkInterfaces() {
   }
 }
 
+function relayAddressCandidates() {
+  if (!state.session?.bind_addr) return [];
+  const { host, port } = parseHostPort(state.session.bind_addr);
+  if (!port) return [];
+  if (host && host !== "0.0.0.0" && host !== "::") {
+    return [{ name: "监听地址", ip: host, addr: state.session.bind_addr }];
+  }
+  const items = state.networkInterfaces.filter((item) => item.ip_addr);
+  const usableItems = items.filter((item) => !isLoopback(item.ip_addr));
+  return (usableItems.length ? usableItems : items).map((item) => ({
+    name: item.name,
+    ip: item.ip_addr,
+    addr: `${item.ip_addr}:${port}`,
+  }));
+}
+
+function sharePayload() {
+  const candidates = relayAddressCandidates();
+  return {
+    version: 1,
+    group_id: state.session.group_id,
+    group_name: groupNameOf(state.session),
+    relay_port: Number(parseHostPort(state.session.bind_addr).port),
+    relay_addrs: candidates.map((item) => item.addr),
+    relay_interfaces: candidates,
+  };
+}
+
+function shareText(payload) {
+  return [
+    `群组: ${payload.group_name}`,
+    `Group ID: ${payload.group_id}`,
+    "Relay 地址:",
+    ...payload.relay_addrs.map((addr) => `- ${addr}`),
+    `分享码: ${encodeShare(payload)}`,
+  ].join("\n");
+}
+
+async function copyText(value) {
+  try {
+    await navigator.clipboard.writeText(value);
+    setStatus("已复制到剪贴板");
+  } catch (err) {
+    setStatus(`复制失败：${err}`);
+  }
+}
+
+function openShareDialog() {
+  if (!state.session) return;
+  const payload = sharePayload();
+  $("share-summary").textContent = `${payload.group_name} · Group ${short(payload.group_id)} · ${payload.relay_addrs.length} 个可连接地址`;
+  $("share-code-output").value = encodeShare(payload);
+  const list = $("share-addresses");
+  list.innerHTML = "";
+  for (const item of payload.relay_interfaces) {
+    const node = document.createElement("div");
+    node.className = "item";
+    node.innerHTML = `
+      <div class="item-head">
+        <span class="title">${item.name}</span>
+        <button type="button" class="secondary mini">复制</button>
+      </div>
+      <div class="muted">${item.addr}</div>
+    `;
+    node.querySelector("button").addEventListener("click", () => copyText(item.addr));
+    list.append(node);
+  }
+  if (!list.children.length) list.append(emptyItem("没有可分享的网卡地址。"));
+  showDialog("share-dialog");
+}
+
+function fillLocalIp(localIp = "") {
+  $("join-interface").value = localIp;
+  $("manual-local-ip").value = localIp;
+}
+
+async function parseShareIntoJoinForm() {
+  try {
+    const payload = decodeShare($("share-code-input").value);
+    const relayAddrs = payload.relay_addrs || payload.relayAddrs || [];
+    if (!payload.group_id || !relayAddrs.length) throw new Error("分享码缺少 Group ID 或 Relay 地址");
+    $("manual-group-id").value = payload.group_id;
+    $("manual-group-name").value = payload.group_name || "群聊";
+    $("manual-relay-addr").value = relayAddrs[0];
+    fillLocalIp("");
+    const localIps = state.networkInterfaces.map((item) => item.ip_addr).filter((ip) => ip && !isLoopback(ip));
+    try {
+      const probe = await call("probe_relay_addr", { relayAddrs, localIps, timeoutMs: 250 });
+      $("manual-relay-addr").value = probe.relay_addr;
+      fillLocalIp(probe.local_ip || "");
+      setStatus(`已解析分享码：${probe.relay_addr}`);
+    } catch (err) {
+      setStatus(`已解析分享码，但未探测到可用地址，先填入第一个候选：${err}`);
+    }
+  } catch (err) {
+    setStatus(`分享码解析失败：${err}`);
+  }
+}
+
 async function join(groupId, relayAddr, localIp = "") {
   const session = await call("join_group", {
     deviceId: null,
@@ -365,7 +492,7 @@ async function join(groupId, relayAddr, localIp = "") {
     relayAddr,
     localIp: localIp || null,
   });
-  setSession(session);
+  setSession(session, $("manual-group-name").value.trim());
 }
 
 async function closeCurrentSession() {
@@ -539,19 +666,25 @@ $("open-create").addEventListener("click", () => showDialog("create-dialog"));
 $("open-join").addEventListener("click", () => openJoinDialog());
 $("close-create").addEventListener("click", () => closeDialog("create-dialog"));
 $("close-join").addEventListener("click", () => closeDialog("join-dialog"));
+$("close-share").addEventListener("click", () => closeDialog("share-dialog"));
 $("leave-button").addEventListener("click", closeCurrentSession);
+$("share-button").addEventListener("click", openShareDialog);
+$("parse-share-code").addEventListener("click", parseShareIntoJoinForm);
+$("copy-share-code").addEventListener("click", () => copyText($("share-code-output").value));
+$("copy-share-text").addEventListener("click", () => copyText(shareText(sharePayload())));
 
 $("create-group").addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
+    const groupName = $("group-name").value.trim() || "LAN Mesh";
     const session = await call("create_group", {
       deviceId: null,
       groupId: null,
-      groupName: $("group-name").value,
+      groupName,
       bindAddr: bindAddr(),
     });
     closeDialog("create-dialog");
-    setSession(session);
+    setSession(session, groupName);
   } catch (err) {
     setStatus(`创建失败：${err}`);
   }
