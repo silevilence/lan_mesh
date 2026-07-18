@@ -55,49 +55,6 @@
 
 ## 🚧 开发中 (In Progress)
 
-- [ ] **任务27:Windows客户端 — 自动更新功能**
-    - [ ] Tauri Updater 接入
-        - [ ] 引入 `tauri-plugin-updater` 与前端 updater 绑定
-            - 任务描述:仅接入 Windows/Tauri 桌面端,Android 端不纳入本任务范围。
-        - [ ] 在 `tauri.conf.json` 中开启 updater artifact 生成
-            - 任务描述:配置 `bundle.createUpdaterArtifacts = true`,保持 NSIS 作为当前唯一安装包目标。
-        - [ ] 配置 updater 公钥与 Release 元数据 endpoint
-            - 任务描述:endpoint 指向 GitHub Release 中的 `latest.json`;生产环境必须使用 HTTPS,禁止使用不安全传输配置。
-        - [ ] 补充 Tauri capability 权限
-            - 任务描述:只开放检查、下载、安装与重启所需的最小权限,不扩大已有 command 权限。
-    - [ ] 更新签名与密钥管理
-        - [ ] 生成 Tauri updater 签名密钥对
-            - 任务描述:公钥写入配置;私钥与密码只放入 GitHub Actions Secrets,禁止提交到仓库。
-        - [ ] 调整发布构建以生成 `.sig` 签名文件
-            - 任务描述:CI 构建时通过环境变量注入私钥,确保 NSIS updater artifact 与签名同时产出。
-        - [ ] 增加签名缺失/校验失败的发布保护
-            - 任务描述:Release asset、`.sig` 或 `latest.json` 任一缺失时直接失败,不发布不可更新版本。
-    - [ ] GitHub Release 元数据发布
-        - [ ] 在 release workflow 中生成并上传 `latest.json`
-            - 任务描述:包含版本号、更新说明、发布时间、`windows-x86_64` 下载地址与签名内容。
-        - [ ] 保持 Tag、`tauri.conf.json` 版本、`Cargo.toml` 版本一致
-            - 任务描述:复用现有 Tag 校验,并补充 Tauri crate 版本校验,避免 updater 看到错误版本。
-        - [ ] 上传 updater 所需 artifact
-            - 任务描述:除用户下载用 NSIS 安装器外,同步上传 updater bundle 与对应 `.sig`。
-    - [ ] 检查更新交互
-        - [ ] 程序启动后自动检查一次更新
-            - 任务描述:只检查并提示,不得自动下载、自动安装或静默重启。
-        - [ ] 提供"检查更新"手动入口
-            - 任务描述:设置/关于区域显示当前版本,点击后展示无更新、有更新、检查失败三类结果。
-        - [ ] 有更新时展示确认弹窗
-            - 任务描述:弹窗展示新版本号、发布时间、CHANGELOG 摘要、下载大小;用户确认后才开始下载。
-        - [ ] 展示下载与安装进度
-            - 任务描述:下载中禁用重复触发;失败时保留错误信息并允许用户重试。
-        - [ ] 安装完成后由用户确认重启
-            - 任务描述:安装完成只提示"立即重启/稍后重启",严禁无提示自动重启。
-    - [ ] 失败兜底与兼容性
-        - [ ] 网络不可用或 GitHub 不可访问时给出可理解提示
-            - 任务描述:提示用户可稍后重试或手动访问 Release 页面下载,不影响局域网通信主流程。
-        - [ ] 处理当前版本已是最新版本的空结果
-            - 任务描述:手动检查时明确提示"已是最新版本";启动检查时避免打扰用户。
-        - [ ] 验证旧版本到新版本的升级路径
-            - 任务描述:至少用低一版本安装包验证检查、下载、签名校验、安装、重启后的版本变化。
-
 ## ✅ 已完成 (Completed)
 
 - [x] **任务00:项目结构初始化**
@@ -427,3 +384,46 @@
         - 任务描述:完整 Group ID、单个 `IP:端口`、整段分享文本均可一键复制,减少手输 UUID 和地址造成的错误。
     - [x] 提供一键分享码与粘贴加入
         - 任务描述:建群方可将完整 Group ID、群组名、Relay 端口、各网卡可连接 IP 等信息压缩编码为一段 Base64 分享码。加入方粘贴后自动解析,从分享码中的候选地址里探测/选择当前可用的 `IP:端口`,并自动填入 Group ID、Relay IP/端口、发起连接网卡等加群信息。Base64 仅作为传输友好的文本封装,内部仍使用 JSON 字段,避免引入新的二进制协议。
+
+- [x] **任务27:Windows客户端 — 自动更新功能**
+    - [x] Tauri Updater 接入
+        - [x] 引入 `tauri-plugin-updater` 与前端 updater 绑定
+            - 任务描述:仅接入 Windows/Tauri 桌面端,Android 端不纳入本任务范围。
+        - [x] 在 `tauri.conf.json` 中开启 updater artifact 生成
+            - 任务描述:配置 `bundle.createUpdaterArtifacts = true`,保持 NSIS 作为当前唯一安装包目标。
+        - [x] 配置 updater 公钥与 Release 元数据 endpoint
+            - 任务描述:endpoint 指向 GitHub Release 中的 `latest.json`;生产环境必须使用 HTTPS,禁止使用不安全传输配置。
+        - [x] 补充 Tauri capability 权限
+            - 任务描述:只开放检查、下载、安装与重启所需的最小权限,不扩大已有 command 权限。
+    - [x] 更新签名与密钥管理
+        - [x] 生成 Tauri updater 签名密钥对
+            - 任务描述:公钥写入配置;私钥与密码只放入 GitHub Actions Secrets,禁止提交到仓库。
+        - [x] 调整发布构建以生成 `.sig` 签名文件
+            - 任务描述:CI 构建时通过环境变量注入私钥,确保 NSIS updater artifact 与签名同时产出。
+        - [x] 增加签名缺失/校验失败的发布保护
+            - 任务描述:Release asset、`.sig` 或 `latest.json` 任一缺失时直接失败,不发布不可更新版本。
+    - [x] GitHub Release 元数据发布
+        - [x] 在 release workflow 中生成并上传 `latest.json`
+            - 任务描述:包含版本号、更新说明、发布时间、`windows-x86_64` 下载地址与签名内容。
+        - [x] 保持 Tag、`tauri.conf.json` 版本、`Cargo.toml` 版本一致
+            - 任务描述:复用现有 Tag 校验,并补充 Tauri crate 版本校验,避免 updater 看到错误版本。
+        - [x] 上传 updater 所需 artifact
+            - 任务描述:除用户下载用 NSIS 安装器外,同步上传 updater bundle 与对应 `.sig`。
+    - [x] 检查更新交互
+        - [x] 程序启动后自动检查一次更新
+            - 任务描述:只检查并提示,不得自动下载、自动安装或静默重启。
+        - [x] 提供"检查更新"手动入口
+            - 任务描述:设置/关于区域显示当前版本,点击后展示无更新、有更新、检查失败三类结果。
+        - [x] 有更新时展示确认弹窗
+            - 任务描述:弹窗展示新版本号、发布时间、CHANGELOG 摘要、下载大小;用户确认后才开始下载。
+        - [x] 展示下载与安装进度
+            - 任务描述:下载中禁用重复触发;失败时保留错误信息并允许用户重试。
+        - [x] 安装完成后由用户确认重启
+            - 任务描述:安装完成只提示"立即重启/稍后重启",严禁无提示自动重启。
+    - [x] 失败兜底与兼容性
+        - [x] 网络不可用或 GitHub 不可访问时给出可理解提示
+            - 任务描述:提示用户可稍后重试或手动访问 Release 页面下载,不影响局域网通信主流程。
+        - [x] 处理当前版本已是最新版本的空结果
+            - 任务描述:手动检查时明确提示"已是最新版本";启动检查时避免打扰用户。
+        - [x] 验证旧版本到新版本的升级路径
+            - 任务描述:至少用低一版本安装包验证检查、下载、签名校验、安装、重启后的版本变化。

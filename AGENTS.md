@@ -128,6 +128,16 @@ Refs: ROADMAP OPDS 书源服务构建与分发
 - 所有 Tauri command 只做参数校验与转调 `core` 接口,不写业务逻辑。
 - 前端与后端之间的实时更新(新消息、成员上下线、传输进度)使用 Tauri 事件系统主动推送,禁止使用前端定时轮询后端状态。
 - 前端技术栈无强制要求,但需保持轻量,不引入重型状态管理框架(需求规模不大)。
+- `src-tauri/src/` 模块职责(新增代码优先放入已有职责模块):
+  - `lib.rs`:Tauri 应用入口,注册插件(`tauri-plugin-updater`)、状态与 command handler,声明 `DEFAULT_TTL`/`DISCOVERY_PORT` 常量。
+  - `commands.rs`:全部 Tauri command,仅做参数校验与转调 `core` 接口。
+  - `events.rs`:`forward_events` 将 `SessionEvent` 转发为前端事件,并处理文件分片接收组装、断点续传重发。
+  - `updates.rs`:`check_update`/`install_update` 命令,转调 `tauri-plugin-updater`;待安装更新暂存于 `PendingUpdate` 状态。
+  - `state.rs`:`AppState`、`ClientSession`、`SentFiles`/`ReceivedFiles` 等跨 command 共享状态。
+  - `network.rs`:网卡枚举、广播发现目标计算、地址解析。
+  - `views.rs`:面向前端的序列化视图结构与转换函数。
+  - `ids.rs`:ID/角色/错误等参数解析与格式化辅助。
+- 自动更新相关约束:启动时仅检查并提示,不得静默下载/安装/重启;下载安装必须经用户确认,安装完成后由用户选择是否重启。updater 公钥写在 `tauri.conf.json`,私钥与密码仅通过 GitHub Actions Secrets 注入,禁止提交到仓库。
 
 ## Android 客户端(android-app)开发规范
 
@@ -151,11 +161,14 @@ Refs: ROADMAP OPDS 书源服务构建与分发
 - 会话(`session.rs`):`Session` 关键方法 `new`/`with_config`/`create_group`/`join_group`/`subscribe`/`role`/`device_id`/`listen`/`connect`/`send_message`/`broadcast_message`/`route_message`/`send_group_message`/`send_direct_message`/`discover_route`/`routes`/`members`/`neighbors`/`announce_member_change`/`member_changed_message`/`start_relay_announcement`/`discover_relays`/`destroy`;事件类型 `SessionEvent`(`NeighborOnline`/`NeighborOffline`/`MessageReceived`);快照 `NeighborSnapshot`/`MemberSnapshot`/`RouteSnapshot`/`RelayAnnouncement`;配置与错误 `ConnectionConfig`/`NetworkError`。
 - 文件传输(`file_transfer.rs`):`FILE_CHUNK_SIZE`、`FileChunkReader`、`FileAssembler`、`FileAssemblyStatus`、`FileTransferError`、`resend_file_chunks`、`file_resume_request_message`、`sha256_file`。
 
-### Tauri commands(`tauri-app/src-tauri/src/commands.rs`)
+### Tauri commands(`tauri-app/src-tauri/src/commands.rs` + `updates.rs`)
 
-每个 command 仅做参数校验并转调 `core` 接口,不写业务逻辑:
+每个 command 仅做参数校验并转调 `core` 接口,不写业务逻辑(`updates.rs` 中的更新检查/安装命令除外,它们转调 `tauri-plugin-updater`):
 
-`create_group`、`discover_relays`、`join_group`、`close_session`、`send_group_text`、`send_direct_text`、`send_file`、`resume_file_transfer`、`request_file_resume`、`get_members`、`get_connection_status`、`list_network_interfaces`、`pick_file`、`save_file_as`。
+- 会话与消息:`create_group`、`discover_relays`、`join_group`、`close_session`、`send_group_text`、`send_direct_text`。
+- 文件传输:`send_file`、`resume_file_transfer`、`request_file_resume`、`pick_file`、`save_file_as`。
+- 状态与网络:`get_members`、`get_connection_status`、`list_network_interfaces`、`probe_relay_addr`(用于分享码解析时从候选中继地址探测可用项并回填本机网卡)。
+- 自动更新(`updates.rs`):`check_update`(检查并暂存待安装更新,返回版本号/发布时间/更新说明)、`install_update`(下载并安装已暂存的更新,由用户确认后重启)。
 
 ### 前端事件通道(`tauri-app/src-tauri/src/events.rs`)
 
