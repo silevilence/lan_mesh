@@ -1717,7 +1717,7 @@ dependencies = [
 
 [[package]]
 name = "lan-mesh-tauri"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "core",
  "if-addrs",
