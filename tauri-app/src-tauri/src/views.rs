@@ -89,6 +89,7 @@ pub(crate) struct MemberEvent {
 pub(crate) struct TransferProgressEvent {
     pub(crate) file_id: String,
     pub(crate) file_name: Option<String>,
+    pub(crate) sender_nickname: Option<String>,
     pub(crate) direction: &'static str,
     pub(crate) chunk_index: u32,
     pub(crate) chunk_count: u32,

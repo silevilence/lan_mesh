@@ -109,13 +109,15 @@ pub(crate) async fn resend_saved_chunks(
     .map_err(err_string)?;
     let resent_chunks = messages.len();
 
-    for message in messages {
-        if let Message::FileChunk { payload, .. } = &message {
+    for mut message in messages {
+        if let Message::FileChunk { payload, .. } = &mut message {
+            payload.sender_nickname = sent.sender_nickname.clone();
             let _ = app.emit(
                 "mesh://transfer-progress",
                 TransferProgressEvent {
                     file_id: id(payload.file_id.0),
                     file_name: Some(payload.file_name.clone()),
+                    sender_nickname: payload.sender_nickname.clone(),
                     direction: "outgoing",
                     chunk_index: payload.chunk_index,
                     chunk_count: payload.chunk_count,
@@ -259,6 +261,7 @@ fn incoming_progress(
     TransferProgressEvent {
         file_id: id(payload.file_id.0),
         file_name: Some(payload.file_name.clone()),
+        sender_nickname: payload.sender_nickname.clone(),
         direction: "incoming",
         chunk_index: payload.chunk_index,
         chunk_count: payload.chunk_count,
@@ -311,6 +314,7 @@ mod tests {
         let payload = FileChunkPayload {
             file_id: FileId::new(),
             file_name: "hello.txt".to_string(),
+            sender_nickname: None,
             chunk_index: 0,
             chunk_count: 1,
             total_size: 5,

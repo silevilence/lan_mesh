@@ -29,7 +29,9 @@ pub fn run() {
             commands::list_network_interfaces,
             commands::probe_relay_addr,
             commands::pick_file,
+            commands::save_temp_file,
             commands::save_file_as,
+            commands::app_version,
             updates::check_update,
             updates::install_update,
         ])

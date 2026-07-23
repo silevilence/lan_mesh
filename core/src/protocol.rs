@@ -53,12 +53,16 @@ pub struct MessageHeader {
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub struct TextPayload {
     pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sender_nickname: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub struct FileChunkPayload {
     pub file_id: FileId,
     pub file_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sender_nickname: Option<String>,
     pub chunk_index: u32,
     pub chunk_count: u32,
     pub total_size: u64,

@@ -333,6 +333,14 @@ impl Session {
         &self,
         content: impl Into<String>,
     ) -> Result<MessageId, NetworkError> {
+        self.send_group_message_with_nickname(content, None).await
+    }
+
+    pub async fn send_group_message_with_nickname(
+        &self,
+        content: impl Into<String>,
+        sender_nickname: Option<String>,
+    ) -> Result<MessageId, NetworkError> {
         let message_id = MessageId::new();
         self.inner
             .inject_message(text_message(
@@ -340,6 +348,7 @@ impl Session {
                 message_id,
                 MessageTarget::Broadcast,
                 content.into(),
+                sender_nickname,
             ))
             .await?;
         Ok(message_id)
@@ -350,6 +359,16 @@ impl Session {
         target_device_id: DeviceId,
         content: impl Into<String>,
     ) -> Result<MessageId, NetworkError> {
+        self.send_direct_message_with_nickname(target_device_id, content, None)
+            .await
+    }
+
+    pub async fn send_direct_message_with_nickname(
+        &self,
+        target_device_id: DeviceId,
+        content: impl Into<String>,
+        sender_nickname: Option<String>,
+    ) -> Result<MessageId, NetworkError> {
         let message_id = MessageId::new();
         self.inner
             .inject_message(text_message(
@@ -359,6 +378,7 @@ impl Session {
                     device_id: target_device_id,
                 },
                 content.into(),
+                sender_nickname,
             ))
             .await?;
         Ok(message_id)
@@ -1135,6 +1155,7 @@ fn text_message(
     message_id: MessageId,
     target: MessageTarget,
     content: String,
+    sender_nickname: Option<String>,
 ) -> Message {
     Message::Text {
         header: MessageHeader {
@@ -1146,7 +1167,10 @@ fn text_message(
             hop_count: 0,
             timestamp_ms: now_timestamp_ms(),
         },
-        payload: TextPayload { content },
+        payload: TextPayload {
+            content,
+            sender_nickname,
+        },
     }
 }
 

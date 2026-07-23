@@ -25,6 +25,7 @@ pub(crate) struct ClientSession {
 pub(crate) struct SentFile {
     pub(crate) path: String,
     pub(crate) target: MessageTarget,
+    pub(crate) sender_nickname: Option<String>,
 }
 
 pub(crate) async fn install_session(app: &AppHandle, state: &AppState, client: ClientSession) {

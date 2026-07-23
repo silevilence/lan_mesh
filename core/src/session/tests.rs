@@ -74,6 +74,7 @@ fn text_message(
         },
         payload: TextPayload {
             content: content.to_string(),
+            sender_nickname: None,
         },
     }
 }
@@ -84,6 +85,7 @@ fn text_message_uses_internal_type_tag() {
         header: header(),
         payload: TextPayload {
             content: "hello".to_string(),
+            sender_nickname: None,
         },
     };
 
@@ -114,6 +116,7 @@ fn file_chunk_data_uses_base64_in_json() {
         payload: FileChunkPayload {
             file_id: FileId::new(),
             file_name: "test.bin".to_string(),
+            sender_nickname: None,
             chunk_index: 0,
             chunk_count: 1,
             total_size: 5,
@@ -247,6 +250,7 @@ async fn assembler_reports_hash_mismatch_after_all_chunks() {
     let chunk = FileChunkPayload {
         file_id,
         file_name: "assembled.bin".to_string(),
+        sender_nickname: None,
         chunk_index: 0,
         chunk_count: 1,
         total_size: 3,
@@ -266,6 +270,7 @@ async fn message_frame_uses_big_endian_length_prefix() {
         header: header(),
         payload: TextPayload {
             content: "hello".to_string(),
+            sender_nickname: None,
         },
     };
     let mut expected_body = message_to_json(&message).unwrap().into_bytes();
@@ -291,6 +296,7 @@ async fn message_frame_round_trips_and_rejects_large_prefix() {
         header: header(),
         payload: TextPayload {
             content: "hello".to_string(),
+            sender_nickname: None,
         },
     };
     let (mut writer, mut reader) = tokio::io::duplex(2048);
@@ -619,6 +625,7 @@ async fn relay_forwards_file_chunks_without_assembly() {
         payload: FileChunkPayload {
             file_id,
             file_name: "relay.bin".to_string(),
+            sender_nickname: None,
             chunk_index: 0,
             chunk_count: 1,
             total_size: 3,

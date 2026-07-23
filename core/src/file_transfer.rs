@@ -61,6 +61,7 @@ pub struct FileChunkReader {
     target: MessageTarget,
     ttl: u8,
     file_name: String,
+    sender_nickname: Option<String>,
     total_size: u64,
     sha256: String,
     next_chunk_index: u32,
@@ -92,6 +93,7 @@ impl FileChunkReader {
             target,
             ttl,
             file_name,
+            sender_nickname: None,
             total_size,
             sha256,
             next_chunk_index: 0,
@@ -109,6 +111,11 @@ impl FileChunkReader {
 
     pub fn sha256(&self) -> &str {
         &self.sha256
+    }
+
+    pub fn with_sender_nickname(mut self, sender_nickname: Option<String>) -> Self {
+        self.sender_nickname = sender_nickname;
+        self
     }
 
     pub async fn next_message(&mut self) -> Result<Option<Message>, FileTransferError> {
@@ -129,6 +136,7 @@ impl FileChunkReader {
             self.chunk_count,
             self.total_size,
             self.file_name.clone(),
+            self.sender_nickname.clone(),
             self.sha256.clone(),
             data,
             self.group_id,
@@ -179,6 +187,7 @@ pub async fn resend_file_chunks(
             chunk_count,
             total_size,
             file_name.clone(),
+            None,
             sha256.clone(),
             data,
             group_id,
@@ -364,6 +373,7 @@ fn file_chunk_message(
     chunk_count: u32,
     total_size: u64,
     file_name: String,
+    sender_nickname: Option<String>,
     sha256: String,
     data: Vec<u8>,
     group_id: GroupId,
@@ -384,6 +394,7 @@ fn file_chunk_message(
         payload: FileChunkPayload {
             file_id,
             file_name,
+            sender_nickname,
             chunk_index,
             chunk_count,
             total_size,

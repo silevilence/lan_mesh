@@ -9,6 +9,9 @@ document.querySelectorAll("form,input").forEach((node) => {
 const state = {
   session: null,
   selected: null,
+  view: "chat",
+  settings: loadSettings(),
+  nicknames: new Map(),
   members: [],
   routes: [],
   relays: [],
@@ -28,6 +31,27 @@ const sourceOf = (message) => headerOf(message).source_device_id ?? headerOf(mes
 const targetOf = (message) => headerOf(message).target ?? {};
 const groupNameOf = (session) => session?.group_name || "群聊";
 const isLoopback = (ip) => ip === "127.0.0.1" || ip?.startsWith("127.");
+const nicknameOf = (payload) => payload?.sender_nickname ?? payload?.senderNickname ?? "";
+
+function loadSettings() {
+  try {
+    return { sendKey: "ctrl_enter", nickname: "", ...JSON.parse(localStorage.getItem("lanMeshSettings") || "{}") };
+  } catch {
+    return { sendKey: "ctrl_enter", nickname: "" };
+  }
+}
+
+function saveSettings() {
+  localStorage.setItem("lanMeshSettings", JSON.stringify(state.settings));
+  $("nickname").value = state.settings.nickname;
+  $("send-key").value = state.settings.sendKey;
+  renderSendHint();
+  renderAll();
+}
+
+function cleanNickname(value) {
+  return text(value).trim().slice(0, 24);
+}
 
 function parseHostPort(value) {
   const raw = text(value).trim();
@@ -92,6 +116,21 @@ function sessionLabel() {
   return `${role} · ${short(state.session.device_id)} · ${short(state.session.group_id)}${addr}`;
 }
 
+function rememberNickname(deviceId, nickname) {
+  const clean = cleanNickname(nickname);
+  if (deviceId && clean) state.nicknames.set(deviceId, clean);
+}
+
+function displayName(deviceId) {
+  if (!deviceId) return "未知设备";
+  const nickname = deviceId === state.session?.device_id ? state.settings.nickname : state.nicknames.get(deviceId);
+  return nickname ? `${nickname}(${short(deviceId)})` : short(deviceId);
+}
+
+function senderNickname() {
+  return cleanNickname(state.settings.nickname) || null;
+}
+
 function setSession(session, groupName = "") {
   session.group_name = groupName || session.group_name || state.pendingJoinGroupName || groupNameOf(session);
   state.pendingJoinGroupName = "";
@@ -102,6 +141,7 @@ function setSession(session, groupName = "") {
   state.groupMessages = [];
   state.directMessages.clear();
   state.transfers.clear();
+  rememberNickname(session.device_id, state.settings.nickname);
   setStatus(sessionLabel());
   $("manual-group-id").value = session.group_id;
   $("manual-group-name").value = session.group_name;
@@ -126,10 +166,27 @@ function forgetRelayGroup(groupId) {
 }
 
 function renderAll() {
+  renderView();
   renderSessionList();
   renderMembers();
   renderConversation();
   renderTransfers();
+}
+
+function renderView() {
+  $("chat-view").classList.toggle("hidden", state.view !== "chat");
+  $("settings-view").classList.toggle("hidden", state.view !== "settings");
+  $("open-chat-view").classList.toggle("active", state.view === "chat");
+  $("open-chat-view").classList.toggle("secondary", state.view !== "chat");
+  $("open-settings-view").classList.toggle("active", state.view === "settings");
+  $("open-settings-view").classList.toggle("secondary", state.view !== "settings");
+}
+
+function renderSendHint() {
+  $("send-hint").textContent =
+    state.settings.sendKey === "enter"
+      ? "Enter 发送；Shift+Enter / Ctrl+Enter 换行。"
+      : "Ctrl+Enter 发送；Enter / Shift+Enter 换行。";
 }
 
 function renderSessionList() {
@@ -185,7 +242,7 @@ function renderMembers() {
     node.className = `item clickable ${state.selected?.type === "direct" && state.selected.id === member.device_id ? "active" : ""}`;
     node.innerHTML = `
       <div class="item-head">
-        <span class="title">${short(member.device_id)}</span>
+        <span class="title">${displayName(member.device_id)}</span>
         <span class="badge ${member.online ? "online" : ""}">${member.online ? "在线" : "离线"}</span>
       </div>
       <div class="muted">${routeLabel(member)}</div>
@@ -238,10 +295,10 @@ function renderConversation() {
   if (!hasSelection) return;
 
   const isGroup = state.selected.type === "group";
-  $("peer-title").textContent = isGroup ? groupNameOf(state.session) : `单聊 ${short(state.selected.id)}`;
+  $("peer-title").textContent = isGroup ? groupNameOf(state.session) : `单聊 ${displayName(state.selected.id)}`;
   $("peer-subtitle").textContent = isGroup ? sessionLabel() : state.selected.id;
   $("leave-button").textContent = state.session.role === "relay" ? "解散群组" : "退出群组";
-  $("share-button").classList.toggle("hidden", !(isGroup && state.session.role === "relay"));
+  $("share-button").classList.toggle("hidden", !isGroup);
   renderMessages();
 }
 
@@ -261,7 +318,7 @@ function renderMessages() {
     const meta = document.createElement("div");
     content.textContent = `${item.kind === "file" ? "📎 " : ""}${item.content}`;
     meta.className = "muted";
-    meta.textContent = `${item.mine ? "我" : short(item.from)} · ${new Date(item.at).toLocaleTimeString()} · ${item.status}`;
+    meta.textContent = `${item.mine ? `我(${displayName(item.from)})` : displayName(item.from)} · ${new Date(item.at).toLocaleTimeString()} · ${item.status}`;
     node.append(content, meta);
     if (item.kind === "file" && item.path && !item.mine) {
       const button = document.createElement("button");
@@ -282,6 +339,7 @@ function addIncoming(message) {
   const source = sourceOf(message);
   const target = targetOf(message);
   const payload = payloadOf(message);
+  rememberNickname(source, nicknameOf(payload));
   const item = {
     from: source,
     mine: source === state.session.device_id,
@@ -387,6 +445,9 @@ async function loadNetworkInterfaces() {
 }
 
 function relayAddressCandidates() {
+  if (state.session?.role !== "relay") {
+    return state.session?.relay_addr ? [{ name: "群主 Relay", ip: parseHostPort(state.session.relay_addr).host, addr: state.session.relay_addr }] : [];
+  }
   if (!state.session?.bind_addr) return [];
   const { host, port } = parseHostPort(state.session.bind_addr);
   if (!port) return [];
@@ -492,6 +553,7 @@ async function join(groupId, relayAddr, localIp = "") {
     relayAddr,
     localIp: localIp || null,
   });
+  session.relay_addr = relayAddr;
   setSession(session, $("manual-group-name").value.trim());
 }
 
@@ -531,6 +593,7 @@ function transferSpeed(item) {
 
 function rememberTransfer(payload) {
   const now = Date.now();
+  rememberNickname(payload.from, nicknameOf(payload));
   const old = state.transfers.get(payload.file_id) || { firstSeen: now };
   const chunks = old.chunks || new Set();
   chunks.add(payload.chunk_index);
@@ -702,6 +765,20 @@ $("check-update").addEventListener("click", () => checkForUpdate());
 $("parse-share-code").addEventListener("click", parseShareIntoJoinForm);
 $("copy-share-code").addEventListener("click", () => copyText($("share-code-output").value));
 $("copy-share-text").addEventListener("click", () => copyText(shareText(sharePayload())));
+$("open-chat-view").addEventListener("click", () => {
+  state.view = "chat";
+  renderAll();
+});
+$("open-settings-view").addEventListener("click", () => {
+  state.view = "settings";
+  renderAll();
+});
+$("save-settings").addEventListener("click", () => {
+  state.settings.nickname = cleanNickname($("nickname").value);
+  state.settings.sendKey = $("send-key").value;
+  saveSettings();
+  setStatus("配置已保存");
+});
 
 $("create-group").addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -751,13 +828,22 @@ $("send-text").addEventListener("submit", async (event) => {
   try {
     item.messageId =
       state.selected.type === "group"
-        ? await call("send_group_text", { content })
-        : await call("send_direct_text", { targetDeviceId: state.selected.id, content });
+        ? await call("send_group_text", { content, senderNickname: senderNickname() })
+        : await call("send_direct_text", { targetDeviceId: state.selected.id, content, senderNickname: senderNickname() });
     item.status = "已送达";
   } catch (err) {
     item.status = `失败：${err}`;
   }
   renderMessages();
+});
+
+$("message-input").addEventListener("keydown", (event) => {
+  if (event.shiftKey) return;
+  const sendByEnter = state.settings.sendKey === "enter" && event.key === "Enter" && !event.ctrlKey;
+  const sendByCtrlEnter = state.settings.sendKey === "ctrl_enter" && event.key === "Enter" && event.ctrlKey;
+  if (!sendByEnter && !sendByCtrlEnter) return;
+  event.preventDefault();
+  $("send-text").requestSubmit();
 });
 
 $("pick-file").addEventListener("click", async () => {
@@ -768,9 +854,7 @@ $("pick-file").addEventListener("click", async () => {
   }
 });
 
-$("send-file").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const path = $("file-path").value.trim();
+async function sendOneFile(path) {
   if (!path || !state.selected) {
     setStatus("请先选择会话和文件。");
     return;
@@ -781,6 +865,7 @@ $("send-file").addEventListener("submit", async (event) => {
     const sent = await call("send_file", {
       path,
       targetDeviceId: state.selected.type === "direct" ? state.selected.id : null,
+      senderNickname: senderNickname(),
     });
     item.status = `已送达 ${sent.chunk_count} 分片`;
   } catch (err) {
@@ -788,6 +873,72 @@ $("send-file").addEventListener("submit", async (event) => {
     markLastOutgoingFailed(path, err);
   }
   renderMessages();
+}
+
+async function sendFiles(paths) {
+  const uniquePaths = [...new Set(paths.filter(Boolean))];
+  if (!uniquePaths.length) return;
+  if (!state.selected) {
+    setStatus("请先选择会话。");
+    return;
+  }
+  if (!confirm(`确认发送 ${uniquePaths.length} 个文件？\n\n${uniquePaths.join("\n")}`)) return;
+  for (const path of uniquePaths) await sendOneFile(path);
+}
+
+function pastedImageName(file) {
+  const ext = (file.type || "image/png").split("/").at(-1) || "png";
+  return file.name || `pasted-image-${new Date().toISOString().replace(/[:.]/g, "-")}.${ext}`;
+}
+
+async function fileToPath(file) {
+  const path = file?.path || file?.webkitRelativePath;
+  if (path) return path;
+  const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
+  return call("save_temp_file", { fileName: pastedImageName(file), bytes });
+}
+
+async function pathsFromDataTransfer(dataTransfer) {
+  const files = [...(dataTransfer?.files || [])];
+  return Promise.all(files.map(fileToPath));
+}
+
+async function handleFileDrop(paths) {
+  messages.classList.remove("drag-over");
+  await sendFiles(paths);
+}
+
+messages.addEventListener("dragover", (event) => {
+  event.preventDefault();
+  messages.classList.add("drag-over");
+});
+
+messages.addEventListener("dragleave", () => messages.classList.remove("drag-over"));
+
+messages.addEventListener("drop", async (event) => {
+  event.preventDefault();
+  await handleFileDrop(await pathsFromDataTransfer(event.dataTransfer));
+});
+
+$("chat-pane").addEventListener("paste", async (event) => {
+  const paths = await pathsFromDataTransfer(event.clipboardData);
+  if (!paths.length) return;
+  event.preventDefault();
+  await sendFiles(paths);
+});
+
+const currentWebview = tauri?.webview?.getCurrentWebview?.();
+currentWebview?.onDragDropEvent?.((event) => {
+  const payload = event.payload;
+  if (payload?.type === "over") messages.classList.add("drag-over");
+  if (payload?.type === "leave") messages.classList.remove("drag-over");
+  if (payload?.type === "drop") handleFileDrop(payload.paths || []);
+});
+
+$("send-file").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const path = $("file-path").value.trim();
+  await sendOneFile(path);
 });
 
 $("join-interface").addEventListener("change", () => {
@@ -825,6 +976,19 @@ if (listen) {
     });
   }
 }
+
+$("nickname").value = state.settings.nickname;
+$("send-key").value = state.settings.sendKey;
+renderSendHint();
+
+call("app_version")
+  .then((version) => {
+    const label = `v${version}`;
+    document.title = `LAN Mesh ${label}`;
+    $("title-version").textContent = label;
+    $("settings-version").textContent = label;
+  })
+  .catch(() => {});
 
 renderAll();
 loadNetworkInterfaces();

@@ -19,7 +19,7 @@ use lan_mesh_core::{
 };
 use std::{
     net::{IpAddr, SocketAddr},
-    path::Path,
+    path::{Path, PathBuf},
     time::Duration,
 };
 use tauri::{AppHandle, Emitter, State};
@@ -143,11 +143,12 @@ pub(crate) async fn close_session(state: State<'_, AppState>) -> Result<(), Stri
 pub(crate) async fn send_group_text(
     state: State<'_, AppState>,
     content: String,
+    sender_nickname: Option<String>,
 ) -> Result<String, String> {
     current_session(&state)
         .await?
         .session
-        .send_group_message(content)
+        .send_group_message_with_nickname(content, clean_nickname(sender_nickname))
         .await
         .map(|message_id| id(message_id.0))
         .map_err(err_string)
@@ -158,12 +159,17 @@ pub(crate) async fn send_direct_text(
     state: State<'_, AppState>,
     target_device_id: String,
     content: String,
+    sender_nickname: Option<String>,
 ) -> Result<String, String> {
     let target_device_id = parse_device_id(&target_device_id)?;
     current_session(&state)
         .await?
         .session
-        .send_direct_message(target_device_id, content)
+        .send_direct_message_with_nickname(
+            target_device_id,
+            content,
+            clean_nickname(sender_nickname),
+        )
         .await
         .map(|message_id| id(message_id.0))
         .map_err(err_string)
@@ -175,6 +181,7 @@ pub(crate) async fn send_file(
     state: State<'_, AppState>,
     path: String,
     target_device_id: Option<String>,
+    sender_nickname: Option<String>,
 ) -> Result<SendFileResponse, String> {
     let client = current_session(&state).await?;
     let file_id = FileId::new();
@@ -187,6 +194,7 @@ pub(crate) async fn send_file(
         },
         None => MessageTarget::Broadcast,
     };
+    let sender_nickname = clean_nickname(sender_nickname);
     let mut reader = FileChunkReader::open(
         &path,
         file_id,
@@ -196,7 +204,8 @@ pub(crate) async fn send_file(
         DEFAULT_TTL,
     )
     .await
-    .map_err(err_string)?;
+    .map_err(err_string)?
+    .with_sender_nickname(sender_nickname.clone());
     let chunk_count = reader.chunk_count();
     let total_size = reader.total_size();
     let file_name = Path::new(&path)
@@ -209,6 +218,7 @@ pub(crate) async fn send_file(
         SentFile {
             path,
             target: target.clone(),
+            sender_nickname: sender_nickname.clone(),
         },
     );
 
@@ -225,6 +235,7 @@ pub(crate) async fn send_file(
             TransferProgressEvent {
                 file_id: id(file_id.0),
                 file_name: file_name.clone(),
+                sender_nickname: sender_nickname.clone(),
                 direction: "outgoing",
                 chunk_index,
                 chunk_count,
@@ -442,6 +453,30 @@ pub(crate) async fn pick_file() -> Result<String, String> {
 }
 
 #[tauri::command]
+pub(crate) async fn save_temp_file(file_name: String, bytes: Vec<u8>) -> Result<String, String> {
+    let path = std::env::temp_dir()
+        .join("LAN Mesh")
+        .join("pasted")
+        .join(format!(
+            "{}-{}",
+            uuid::Uuid::new_v4(),
+            safe_file_name(&file_name)
+        ));
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(err_string)?;
+    }
+    tokio::fs::write(&path, bytes).await.map_err(err_string)?;
+    Ok(path_string(path))
+}
+
+#[tauri::command]
+pub(crate) fn app_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
+#[tauri::command]
 pub(crate) async fn save_file_as(
     path: String,
     file_name: Option<String>,
@@ -474,4 +509,24 @@ async fn pick_save_path(file_name: String) -> Result<String, String> {
 
 fn path_string(path: std::path::PathBuf) -> String {
     path.to_string_lossy().into_owned()
+}
+
+fn clean_nickname(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().chars().take(24).collect::<String>())
+        .filter(|value| !value.is_empty())
+}
+
+fn safe_file_name(value: &str) -> String {
+    let name = PathBuf::from(value)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("pasted-file")
+        .trim()
+        .to_string();
+    if name.is_empty() {
+        "pasted-file".to_string()
+    } else {
+        name.replace(['\\', '/', ':', '*', '?', '"', '<', '>', '|'], "_")
+    }
 }
