@@ -261,8 +261,15 @@ impl Session {
         local_ip: Option<IpAddr>,
     ) -> Result<(Self, NeighborId), NetworkError> {
         let session = Self::new(device_id, group_id, DeviceRole::Leaf);
-        let neighbor_id = session.connect(relay_addr, local_ip).await?;
-        Ok((session, neighbor_id))
+        match session.connect(relay_addr, local_ip).await {
+            Ok(neighbor_id) => Ok((session, neighbor_id)),
+            Err(err) => {
+                // A failed restoration/retry must not leave the session's
+                // maintenance tasks alive after its handle is dropped.
+                session.destroy().await;
+                Err(err)
+            }
+        }
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<SessionEvent> {

@@ -13,6 +13,7 @@ const state = {
   settings: loadSettings(),
   nicknames: new Map(),
   members: [],
+  savedGroups: [],
   routes: [],
   relays: [],
   networkInterfaces: [],
@@ -146,6 +147,7 @@ function setSession(session, groupName = "") {
   $("manual-group-id").value = session.group_id;
   $("manual-group-name").value = session.group_name;
   refreshMembers();
+  loadSavedGroups();
   renderAll();
 }
 
@@ -159,6 +161,15 @@ function clearSession() {
   state.transfers.clear();
   setStatus("未连接");
   renderAll();
+}
+
+async function loadSavedGroups() {
+  try {
+    state.savedGroups = await call("list_saved_groups");
+    renderSessionList();
+  } catch (err) {
+    log("list_saved_groups failed", text(err));
+  }
 }
 
 function forgetRelayGroup(groupId) {
@@ -192,18 +203,53 @@ function renderSendHint() {
 function renderSessionList() {
   sessionList.innerHTML = "";
 
-  if (state.session) {
-    const node = document.createElement("button");
-    node.type = "button";
-    node.className = `item clickable ${state.selected?.type === "group" ? "active" : ""}`;
-    node.innerHTML = `
-      <div class="item-head">
-        <span class="title">${groupNameOf(state.session)}</span>
-        <span class="badge">${state.session.role === "relay" ? "我创建的" : "已加入"}</span>
-      </div>
-      <div class="muted">${sessionLabel()}</div>
-    `;
-    node.addEventListener("click", openGroup);
+  for (const group of state.savedGroups) {
+    const node = document.createElement("div");
+    node.className = `item ${group.group_id === state.session?.group_id ? "active" : ""}`;
+    const head = document.createElement("div");
+    head.className = "item-head";
+    const title = document.createElement("span");
+    title.className = "title";
+    title.textContent = group.group_name || "LAN Mesh";
+    const badge = document.createElement("span");
+    badge.className = `badge ${group.status === "connected" ? "online" : ""}`;
+    badge.textContent = group.status === "connected" ? (group.role === "relay" ? "我创建的" : "已连接") : "无法联通";
+    head.append(title, badge);
+    const detail = document.createElement("div");
+    detail.className = "muted";
+    detail.textContent = `Group ${short(group.group_id)} · ${group.role === "relay" ? group.bind_addr || "Relay" : group.relay_addr || "Leaf"}`;
+    node.append(head, detail);
+    if (group.last_error && group.status === "unreachable") {
+      const error = document.createElement("div");
+      error.className = "muted";
+      error.textContent = group.last_error;
+      node.append(error);
+    }
+    const actions = document.createElement("div");
+    actions.className = "item-actions";
+    if (group.status === "connected") {
+      const open = document.createElement("button");
+      open.type = "button";
+      open.className = "secondary mini";
+      open.textContent = group.group_id === state.session?.group_id ? "当前群组" : "打开";
+      open.disabled = group.group_id === state.session?.group_id;
+      open.addEventListener("click", () => activateSavedGroup(group));
+      actions.append(open);
+    } else {
+      const retry = document.createElement("button");
+      retry.type = "button";
+      retry.className = "secondary mini";
+      retry.textContent = "尝试重连";
+      retry.addEventListener("click", () => retrySavedGroup(group));
+      actions.append(retry);
+    }
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "danger mini";
+    remove.textContent = "删除";
+    remove.addEventListener("click", () => deleteSavedGroup(group));
+    actions.append(remove);
+    node.append(actions);
     sessionList.append(node);
   }
 
@@ -235,23 +281,23 @@ function renderMembers() {
     return;
   }
 
-  const peers = state.members.filter((member) => member.device_id !== state.session.device_id);
-  for (const member of peers) {
-    const node = document.createElement("button");
-    node.type = "button";
-    node.className = `item clickable ${state.selected?.type === "direct" && state.selected.id === member.device_id ? "active" : ""}`;
+  for (const member of state.members) {
+    const isSelf = member.device_id === state.session.device_id;
+    const node = document.createElement(isSelf ? "div" : "button");
+    if (!isSelf) node.type = "button";
+    node.className = `item ${isSelf ? "" : "clickable"} ${state.selected?.type === "direct" && state.selected.id === member.device_id ? "active" : ""}`;
     node.innerHTML = `
       <div class="item-head">
-        <span class="title">${displayName(member.device_id)}</span>
+        <span class="title">${isSelf ? `我 · ${displayName(member.device_id)}` : displayName(member.device_id)}</span>
         <span class="badge ${member.online ? "online" : ""}">${member.online ? "在线" : "离线"}</span>
       </div>
       <div class="muted">${routeLabel(member)}</div>
     `;
-    node.addEventListener("click", () => openDirect(member.device_id));
+    if (!isSelf) node.addEventListener("click", () => openDirect(member.device_id));
     memberList.append(node);
   }
 
-  if (!peers.length) memberList.append(emptyItem("暂无其他成员。"));
+  if (!state.members.length) memberList.append(emptyItem("暂无成员。"));
 }
 
 function emptyItem(content) {
@@ -550,11 +596,45 @@ async function join(groupId, relayAddr, localIp = "") {
   const session = await call("join_group", {
     deviceId: null,
     groupId,
+    groupName: $("manual-group-name").value.trim() || null,
     relayAddr,
     localIp: localIp || null,
   });
   session.relay_addr = relayAddr;
   setSession(session, $("manual-group-name").value.trim());
+}
+
+async function activateSavedGroup(group) {
+  try {
+    const active = await call("activate_saved_group", { groupId: group.group_id });
+    setSession(active, active.group_name);
+  } catch (err) {
+    setStatus(`打开群组失败：${err}`);
+    loadSavedGroups();
+  }
+}
+
+async function retrySavedGroup(group) {
+  try {
+    const active = await call("retry_saved_group", { groupId: group.group_id });
+    setStatus(`已重新连接 ${active.group_name}`);
+    setSession(active, active.group_name);
+  } catch (err) {
+    setStatus(`重连失败：${err}`);
+    loadSavedGroups();
+  }
+}
+
+async function deleteSavedGroup(group) {
+  if (!confirm(`删除“${group.group_name}”的本地记录？`)) return;
+  try {
+    await call("delete_saved_group", { groupId: group.group_id });
+    if (group.group_id === state.session?.group_id) clearSession();
+    await loadSavedGroups();
+    setStatus("已删除群组记录");
+  } catch (err) {
+    setStatus(`删除失败：${err}`);
+  }
 }
 
 async function closeCurrentSession() {
@@ -565,6 +645,7 @@ async function closeCurrentSession() {
   await call("close_session");
   forgetRelayGroup(groupId);
   clearSession();
+  loadSavedGroups();
 }
 
 function formatBytes(value) {
@@ -952,20 +1033,20 @@ if (listen) {
     "mesh://message-received",
     "mesh://member-changed",
     "mesh://transfer-progress",
+    "mesh://groups-changed",
     "mesh://update-progress",
   ]) {
     listen(name, ({ payload }) => {
       log(name, payload);
+      if (name === "mesh://groups-changed") {
+        loadSavedGroups();
+        return;
+      }
+      if (payload?.group_id && payload.group_id !== state.session?.group_id) return;
       if (name === "mesh://message-received") addIncoming(payload.message);
       if (name === "mesh://neighbor-offline") {
         markInterruptedTransfers("连接中断");
-        if (state.session?.role === "leaf") {
-          const groupId = state.session.group_id;
-          forgetRelayGroup(groupId);
-          clearSession();
-          setStatus("群组已断开");
-          return;
-        }
+        if (state.session?.role === "leaf") setStatus("连接暂时中断，正在后台重连…");
       }
       if (name === "mesh://member-changed" || name.includes("neighbor")) refreshMembers();
       if (name === "mesh://transfer-progress") rememberTransfer(payload);
@@ -992,4 +1073,5 @@ call("app_version")
 
 renderAll();
 loadNetworkInterfaces();
+loadSavedGroups();
 checkForUpdate({ silent: true });

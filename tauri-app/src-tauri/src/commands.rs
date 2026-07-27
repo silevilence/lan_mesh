@@ -1,16 +1,22 @@
 use crate::{
     DEFAULT_TTL, DISCOVERY_PORT,
     events::resend_saved_chunks,
+    groups::establish_saved_group,
     ids::{
         duration_ms, err_string, id, parse_device_id, parse_file_id, parse_group_id,
         parse_optional_ip, parse_or_new_device_id, parse_or_new_group_id, role_name,
     },
     network::{announcement_targets, network_interfaces, parse_socket_addr},
-    state::{AppState, ClientSession, SentFile, current_session, install_session},
+    persistence::{GroupAvailability, PersistedGroup},
+    state::{
+        AppState, ClientSession, SentFile, activate_session, current_session, install_session,
+        remove_session,
+    },
     views::{
         ConnectionStatus, MemberView, NeighborView, NetworkInterfaceView, ProbeRelayResponse,
-        RelayAnnouncementView, ResumeFileResponse, SendFileResponse, SessionResponse,
-        TransferProgressEvent, relay_view, route_view, session_response,
+        RelayAnnouncementView, ResumeFileResponse, SavedGroupView, SendFileResponse,
+        SessionResponse, TransferProgressEvent, relay_view, route_view, saved_group_view,
+        session_response,
     },
 };
 use lan_mesh_core::{
@@ -61,12 +67,31 @@ pub(crate) async fn create_group(
         }
     }
     if !started {
+        session.destroy().await;
         return Err(last_err
             .map(err_string)
             .unwrap_or_else(|| "failed to start relay announcement".to_string()));
     }
 
-    install_session(&app, &state, ClientSession { session, group_id }).await;
+    if let Err(err) = state
+        .groups
+        .upsert(PersistedGroup {
+            device_id,
+            group_id,
+            group_name: group_name.clone(),
+            role: DeviceRole::Relay,
+            bind_addr: Some(local_addr.to_string()),
+            relay_addr: None,
+            local_ip: None,
+            status: GroupAvailability::Connected,
+            last_error: None,
+        })
+        .await
+    {
+        session.destroy().await;
+        return Err(err);
+    }
+    install_session(&app, &state, ClientSession { session, group_id }, true).await;
 
     Ok(session_response(
         device_id,
@@ -103,6 +128,7 @@ pub(crate) async fn join_group(
     state: State<'_, AppState>,
     device_id: Option<String>,
     group_id: String,
+    group_name: Option<String>,
     relay_addr: String,
     local_ip: Option<String>,
 ) -> Result<SessionResponse, String> {
@@ -110,11 +136,32 @@ pub(crate) async fn join_group(
     let group_id = parse_group_id(&group_id)?;
     let relay_addr = parse_socket_addr(&relay_addr)?;
     let local_ip = parse_optional_ip(local_ip)?;
+    let group_name = group_name
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "LAN Mesh".to_string());
     let (session, neighbor_id) = Session::join_group(device_id, group_id, relay_addr, local_ip)
         .await
         .map_err(err_string)?;
 
-    install_session(&app, &state, ClientSession { session, group_id }).await;
+    if let Err(err) = state
+        .groups
+        .upsert(PersistedGroup {
+            device_id,
+            group_id,
+            group_name,
+            role: DeviceRole::Leaf,
+            bind_addr: None,
+            relay_addr: Some(relay_addr.to_string()),
+            local_ip: local_ip.map(|ip| ip.to_string()),
+            status: GroupAvailability::Connected,
+            last_error: None,
+        })
+        .await
+    {
+        session.destroy().await;
+        return Err(err);
+    }
+    install_session(&app, &state, ClientSession { session, group_id }, true).await;
 
     Ok(session_response(
         device_id,
@@ -127,16 +174,86 @@ pub(crate) async fn join_group(
 
 #[tauri::command]
 pub(crate) async fn close_session(state: State<'_, AppState>) -> Result<(), String> {
-    if let Some(task) = state.event_task.lock().await.take() {
-        task.abort();
-    }
-    let client = state.client.lock().await.take();
-    if let Some(client) = client {
-        client.session.destroy().await;
-    }
-    state.sent_files.lock().await.clear();
-    state.received_files.lock().await.clear();
+    let group_id = state
+        .active_group_id
+        .lock()
+        .await
+        .ok_or_else(|| "no active mesh session".to_string())?;
+    remove_session(&state, group_id).await;
+    state.groups.remove(group_id).await?;
     Ok(())
+}
+
+#[tauri::command]
+pub(crate) async fn list_saved_groups(
+    state: State<'_, AppState>,
+) -> Result<Vec<SavedGroupView>, String> {
+    Ok(state
+        .groups
+        .list()
+        .await
+        .into_iter()
+        .map(saved_group_view)
+        .collect())
+}
+
+#[tauri::command]
+pub(crate) async fn activate_saved_group(
+    state: State<'_, AppState>,
+    group_id: String,
+) -> Result<SavedGroupView, String> {
+    let group_id = parse_group_id(&group_id)?;
+    activate_persisted_group(&state, group_id).await
+}
+
+async fn activate_persisted_group(
+    state: &AppState,
+    group_id: GroupId,
+) -> Result<SavedGroupView, String> {
+    if let Err(err) = activate_session(state, group_id).await {
+        state
+            .groups
+            .set_status(group_id, GroupAvailability::Unreachable, Some(err.clone()))
+            .await?;
+        return Err(err);
+    }
+    state
+        .groups
+        .find(group_id)
+        .await
+        .map(saved_group_view)
+        .ok_or_else(|| "saved group not found".to_string())
+}
+
+#[tauri::command]
+pub(crate) async fn retry_saved_group(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    group_id: String,
+) -> Result<SavedGroupView, String> {
+    let group_id = parse_group_id(&group_id)?;
+    let group = state
+        .groups
+        .find(group_id)
+        .await
+        .ok_or_else(|| "saved group not found".to_string())?;
+    establish_saved_group(&app, &state, group, true).await?;
+    state
+        .groups
+        .find(group_id)
+        .await
+        .map(saved_group_view)
+        .ok_or_else(|| "saved group not found".to_string())
+}
+
+#[tauri::command]
+pub(crate) async fn delete_saved_group(
+    state: State<'_, AppState>,
+    group_id: String,
+) -> Result<(), String> {
+    let group_id = parse_group_id(&group_id)?;
+    remove_session(&state, group_id).await;
+    state.groups.remove(group_id).await
 }
 
 #[tauri::command]
@@ -233,6 +350,7 @@ pub(crate) async fn send_file(
         let _ = app.emit(
             "mesh://transfer-progress",
             TransferProgressEvent {
+                group_id: id(client.group_id.0),
                 file_id: id(file_id.0),
                 file_name: file_name.clone(),
                 sender_nickname: sender_nickname.clone(),
@@ -528,5 +646,42 @@ fn safe_file_name(value: &str) -> String {
         "pasted-file".to_string()
     } else {
         name.replace(['\\', '/', ':', '*', '?', '"', '<', '>', '|'], "_")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::persistence::GroupStore;
+
+    #[tokio::test]
+    async fn opening_a_missing_connected_session_marks_the_group_unreachable() {
+        let directory =
+            std::env::temp_dir().join(format!("lan-mesh-command-{}", uuid::Uuid::new_v4()));
+        let state = AppState::new(GroupStore::load(directory.join("groups.json")));
+        let group = PersistedGroup {
+            device_id: DeviceId::new(),
+            group_id: GroupId::new(),
+            group_name: "离线群组".to_string(),
+            role: DeviceRole::Leaf,
+            bind_addr: None,
+            relay_addr: Some("192.168.0.101:59114".to_string()),
+            local_ip: None,
+            status: GroupAvailability::Connected,
+            last_error: None,
+        };
+        state.groups.upsert(group.clone()).await.unwrap();
+
+        assert!(
+            activate_persisted_group(&state, group.group_id)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            state.groups.find(group.group_id).await.unwrap().status,
+            GroupAvailability::Unreachable
+        );
+
+        let _ = tokio::fs::remove_dir_all(directory).await;
     }
 }

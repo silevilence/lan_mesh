@@ -1,7 +1,9 @@
 mod commands;
 mod events;
+mod groups;
 mod ids;
 mod network;
+mod persistence;
 mod state;
 mod updates;
 mod views;
@@ -11,7 +13,6 @@ const DISCOVERY_PORT: u16 = 37020;
 
 pub fn run() {
     tauri::Builder::default()
-        .manage(state::AppState::default())
         .manage(updates::PendingUpdate::default())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
@@ -19,6 +20,10 @@ pub fn run() {
             commands::discover_relays,
             commands::join_group,
             commands::close_session,
+            commands::list_saved_groups,
+            commands::activate_saved_group,
+            commands::retry_saved_group,
+            commands::delete_saved_group,
             commands::send_group_text,
             commands::send_direct_text,
             commands::send_file,
@@ -35,6 +40,21 @@ pub fn run() {
             updates::check_update,
             updates::install_update,
         ])
+        .setup(|app| {
+            use tauri::Manager;
+
+            let groups_path = app
+                .path()
+                .app_local_data_dir()
+                .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?
+                .join("groups.json");
+            app.manage(state::AppState::new(persistence::GroupStore::load(
+                groups_path,
+            )));
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(groups::restore_saved_groups(handle));
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("failed to run LAN Mesh Tauri app");
 }

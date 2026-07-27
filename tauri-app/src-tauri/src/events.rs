@@ -1,11 +1,12 @@
 use crate::{
     DEFAULT_TTL,
     ids::{err_string, id, neighbor},
+    persistence::{GroupAvailability, GroupStore},
     state::{ReceivedFiles, SentFiles},
     views::{MemberEvent, MessageEvent, NeighborEvent, TransferProgressEvent},
 };
 use lan_mesh_core::{
-    FileAssemblyStatus, FileChunkPayload, FileResumeRequestPayload, GroupId, Message,
+    DeviceRole, FileAssemblyStatus, FileChunkPayload, FileResumeRequestPayload, GroupId, Message,
     MessageHeader, MessageTarget, Session, SessionEvent, resend_file_chunks,
 };
 use std::path::PathBuf;
@@ -17,6 +18,7 @@ pub(crate) async fn forward_events(
     group_id: GroupId,
     sent_files: SentFiles,
     received_files: ReceivedFiles,
+    groups: GroupStore,
 ) {
     let mut events = session.subscribe();
     while let Ok(event) = events.recv().await {
@@ -26,6 +28,7 @@ pub(crate) async fn forward_events(
             group_id,
             &sent_files,
             &received_files,
+            &groups,
             event,
         )
         .await;
@@ -38,6 +41,7 @@ async fn emit_event(
     group_id: GroupId,
     sent_files: &SentFiles,
     received_files: &ReceivedFiles,
+    groups: &GroupStore,
     event: SessionEvent,
 ) {
     match event {
@@ -45,9 +49,11 @@ async fn emit_event(
             neighbor_id,
             peer_addr,
         } => {
+            sync_leaf_availability(app, session, group_id, groups, true).await;
             let _ = app.emit(
                 "mesh://neighbor-online",
                 NeighborEvent {
+                    group_id: id(group_id.0),
                     neighbor_id: neighbor(neighbor_id),
                     peer_addr: peer_addr.to_string(),
                 },
@@ -57,9 +63,11 @@ async fn emit_event(
             neighbor_id,
             peer_addr,
         } => {
+            sync_leaf_availability(app, session, group_id, groups, false).await;
             let _ = app.emit(
                 "mesh://neighbor-offline",
                 NeighborEvent {
+                    group_id: id(group_id.0),
                     neighbor_id: neighbor(neighbor_id),
                     peer_addr: peer_addr.to_string(),
                 },
@@ -69,18 +77,45 @@ async fn emit_event(
             neighbor_id,
             message,
         } => {
-            emit_message_side_events(app, received_files, &message).await;
+            emit_message_side_events(app, group_id, received_files, &message).await;
             if let Message::FileResumeRequest { payload, .. } = &message {
                 let _ = resend_saved_chunks(app, session, group_id, sent_files, payload).await;
             }
             let _ = app.emit(
                 "mesh://message-received",
                 MessageEvent {
+                    group_id: id(group_id.0),
                     neighbor_id: neighbor(neighbor_id),
                     message,
                 },
             );
         }
+    }
+}
+
+async fn sync_leaf_availability(
+    app: &AppHandle,
+    session: &Session,
+    group_id: GroupId,
+    groups: &GroupStore,
+    connected: bool,
+) {
+    if session.role() != DeviceRole::Leaf {
+        return;
+    }
+    let result = groups
+        .set_status(
+            group_id,
+            if connected {
+                GroupAvailability::Connected
+            } else {
+                GroupAvailability::Unreachable
+            },
+            (!connected).then(|| "与 Relay 的连接已断开".to_string()),
+        )
+        .await;
+    if result.is_ok() {
+        let _ = app.emit("mesh://groups-changed", ());
     }
 }
 
@@ -115,6 +150,7 @@ pub(crate) async fn resend_saved_chunks(
             let _ = app.emit(
                 "mesh://transfer-progress",
                 TransferProgressEvent {
+                    group_id: id(group_id.0),
                     file_id: id(payload.file_id.0),
                     file_name: Some(payload.file_name.clone()),
                     sender_nickname: payload.sender_nickname.clone(),
@@ -143,6 +179,7 @@ pub(crate) async fn resend_saved_chunks(
 
 async fn emit_message_side_events(
     app: &AppHandle,
+    group_id: GroupId,
     received_files: &ReceivedFiles,
     message: &Message,
 ) {
@@ -151,6 +188,7 @@ async fn emit_message_side_events(
             let _ = app.emit(
                 "mesh://member-changed",
                 MemberEvent {
+                    group_id: id(group_id.0),
                     device_id: id(payload.device_id.0),
                     change: payload.change,
                 },
@@ -158,6 +196,7 @@ async fn emit_message_side_events(
         }
         Message::FileChunk { header, payload } => {
             let mut event = receive_file_chunk(received_files, payload).await;
+            event.group_id = id(group_id.0);
             event.from = Some(id(header.source_device_id.0));
             event.target_device_id = target_device_id(header);
             let _ = app.emit("mesh://transfer-progress", event);
@@ -259,6 +298,7 @@ fn incoming_progress(
     error: Option<impl ToString>,
 ) -> TransferProgressEvent {
     TransferProgressEvent {
+        group_id: String::new(),
         file_id: id(payload.file_id.0),
         file_name: Some(payload.file_name.clone()),
         sender_nickname: payload.sender_nickname.clone(),

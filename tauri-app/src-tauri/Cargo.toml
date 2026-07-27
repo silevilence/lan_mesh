@@ -18,5 +18,5 @@ if-addrs = "0.15.0"
 rfd = "0.17.2"
 tauri = { version = "2", features = [] }
 tauri-plugin-updater = "2.10.1"
-tokio = { version = "1.52.3", features = ["sync"] }
+tokio = { version = "1.52.3", features = ["fs", "sync", "time"] }
 uuid = "1.23.4"
