@@ -212,3 +212,17 @@ cd core-ffi && cargo build --release --target <android-target>
 - [ ] 是否复用了前置任务已提供的接口,而非重复实现
 - [ ] `cargo build` 与相关 `cargo test` 是否通过
 - [ ] 任务分解文档中对应条目是否已勾选更新
+
+## Agent skills
+
+### Issue tracker
+
+Issues live as markdown files under `.scratch/<feature-slug>/` (local-markdown tracker; no PR triage surface). See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default vocabulary: `needs-triage` / `needs-info` / `ready-for-agent` / `ready-for-human` / `wontfix`, recorded as a `Status:` line in each issue file. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context layout: one `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
