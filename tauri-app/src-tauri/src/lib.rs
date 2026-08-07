@@ -26,6 +26,7 @@ pub fn run() {
             commands::delete_saved_group,
             commands::send_group_text,
             commands::send_direct_text,
+            commands::announce_nickname,
             commands::send_file,
             commands::resume_file_transfer,
             commands::request_file_resume,

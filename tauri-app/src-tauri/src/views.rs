@@ -40,6 +40,7 @@ pub(crate) struct RelayAnnouncementView {
 pub(crate) struct MemberView {
     pub(crate) device_id: String,
     pub(crate) online: bool,
+    pub(crate) nickname: Option<String>,
     pub(crate) last_seen_ms: u64,
 }
 

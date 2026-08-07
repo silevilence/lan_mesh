@@ -94,6 +94,10 @@ pub enum MemberChange {
 pub struct MemberChangedPayload {
     pub device_id: DeviceId,
     pub change: MemberChange,
+    #[serde(default)]
+    pub nickname: Option<String>,
+    #[serde(default)]
+    pub nickname_updated: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]

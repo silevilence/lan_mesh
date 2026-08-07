@@ -147,6 +147,7 @@ function setSession(session, groupName = "") {
   $("manual-group-id").value = session.group_id;
   $("manual-group-name").value = session.group_name;
   refreshMembers();
+  void announceNickname();
   loadSavedGroups();
   renderAll();
 }
@@ -410,9 +411,26 @@ async function refreshMembers() {
     call("get_members"),
     call("get_connection_status"),
   ]);
+  for (const member of memberList) {
+    if (Object.hasOwn(member, "nickname")) {
+      const nickname = cleanNickname(member.nickname);
+      if (nickname) state.nicknames.set(member.device_id, nickname);
+      else state.nicknames.delete(member.device_id);
+    }
+  }
   state.members = memberList.sort((a, b) => text(a.device_id).localeCompare(text(b.device_id)));
   state.routes = statusSnapshot.routes;
   renderAll();
+}
+
+async function announceNickname() {
+  if (!state.session) return;
+  try {
+    await call("announce_nickname", { nickname: senderNickname() });
+    await refreshMembers();
+  } catch (err) {
+    log("announce_nickname failed", text(err));
+  }
 }
 
 function renderRelays(items) {
@@ -858,6 +876,7 @@ $("save-settings").addEventListener("click", () => {
   state.settings.nickname = cleanNickname($("nickname").value);
   state.settings.sendKey = $("send-key").value;
   saveSettings();
+  void announceNickname();
   setStatus("配置已保存");
 });
 

@@ -6,7 +6,7 @@ use crate::{
         duration_ms, err_string, id, parse_device_id, parse_file_id, parse_group_id,
         parse_optional_ip, parse_or_new_device_id, parse_or_new_group_id, role_name,
     },
-    network::{announcement_targets, network_interfaces, parse_socket_addr},
+    network::{announcement_targets, discovery_bind_addrs, network_interfaces, parse_socket_addr},
     persistence::{GroupAvailability, PersistedGroup},
     state::{
         AppState, ClientSession, SentFile, activate_session, current_session, install_session,
@@ -29,7 +29,7 @@ use std::{
     time::Duration,
 };
 use tauri::{AppHandle, Emitter, State};
-use tokio::{net::TcpSocket, time::timeout};
+use tokio::{net::TcpSocket, task::JoinSet, time::timeout};
 
 #[tauri::command]
 pub(crate) async fn create_group(
@@ -107,19 +107,25 @@ pub(crate) async fn discover_relays(
     bind_addr: String,
     duration_ms: Option<u64>,
 ) -> Result<Vec<RelayAnnouncementView>, String> {
-    let session = Session::new(DeviceId::new(), GroupId::new(), DeviceRole::Leaf);
-    let result = session
-        .discover_relays(
-            parse_socket_addr(&bind_addr)?,
-            Duration::from_millis(duration_ms.unwrap_or(1000)),
-        )
-        .await
-        .map_err(err_string)?
-        .into_iter()
-        .map(relay_view)
-        .collect();
-    session.destroy().await;
-    Ok(result)
+    let duration = Duration::from_millis(duration_ms.unwrap_or(1000));
+    let mut scans = JoinSet::new();
+    for bind_addr in discovery_bind_addrs(parse_socket_addr(&bind_addr)?) {
+        scans.spawn(async move {
+            let session = Session::new(DeviceId::new(), GroupId::new(), DeviceRole::Leaf);
+            let result = session.discover_relays(bind_addr, duration).await;
+            session.destroy().await;
+            result
+        });
+    }
+
+    let mut relays = std::collections::HashMap::new();
+    while let Some(result) = scans.join_next().await {
+        let result = result.map_err(err_string)?.map_err(err_string)?;
+        for relay in result {
+            relays.insert((relay.device_id, relay.tcp_addr), relay);
+        }
+    }
+    Ok(relays.into_values().map(relay_view).collect())
 }
 
 #[tauri::command]
@@ -293,6 +299,19 @@ pub(crate) async fn send_direct_text(
 }
 
 #[tauri::command]
+pub(crate) async fn announce_nickname(
+    state: State<'_, AppState>,
+    nickname: Option<String>,
+) -> Result<(), String> {
+    current_session(&state)
+        .await?
+        .session
+        .announce_nickname(clean_nickname(nickname))
+        .await
+        .map_err(err_string)
+}
+
+#[tauri::command]
 pub(crate) async fn send_file(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -449,6 +468,7 @@ pub(crate) async fn get_members(state: State<'_, AppState>) -> Result<Vec<Member
         .map(|member| MemberView {
             device_id: id(member.device_id.0),
             online: member.online,
+            nickname: member.nickname,
             last_seen_ms: duration_ms(member.last_seen_elapsed),
         })
         .collect())

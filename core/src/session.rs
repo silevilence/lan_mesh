@@ -127,6 +127,7 @@ pub struct NeighborSnapshot {
 pub struct MemberSnapshot {
     pub device_id: DeviceId,
     pub online: bool,
+    pub nickname: Option<String>,
     pub last_seen_elapsed: Duration,
 }
 
@@ -185,6 +186,7 @@ struct ReconnectTarget {
 
 struct MemberEntry {
     online: bool,
+    nickname: Option<String>,
     last_seen: Instant,
 }
 
@@ -217,6 +219,7 @@ impl Session {
             device_id,
             MemberEntry {
                 online: true,
+                nickname: None,
                 last_seen: Instant::now(),
             },
         );
@@ -415,7 +418,7 @@ impl Session {
     }
 
     pub fn member_changed_message(&self, device_id: DeviceId, change: MemberChange) -> Message {
-        member_changed_message(&self.inner, device_id, change)
+        member_changed_message(&self.inner, device_id, change, None)
     }
 
     pub async fn announce_member_change(
@@ -423,9 +426,29 @@ impl Session {
         device_id: DeviceId,
         change: MemberChange,
     ) -> Result<(), NetworkError> {
-        self.inner.apply_member_change(device_id, change).await;
         self.inner
-            .broadcast_message(member_changed_message(&self.inner, device_id, change))
+            .apply_member_change(device_id, change, None)
+            .await;
+        self.inner
+            .broadcast_message(member_changed_message(&self.inner, device_id, change, None))
+            .await
+    }
+
+    pub async fn announce_nickname(&self, nickname: Option<String>) -> Result<(), NetworkError> {
+        self.inner
+            .apply_member_change(
+                self.inner.device_id,
+                MemberChange::Online,
+                Some(nickname.clone()),
+            )
+            .await;
+        self.inner
+            .broadcast_message(member_changed_message(
+                &self.inner,
+                self.inner.device_id,
+                MemberChange::Online,
+                Some(nickname),
+            ))
             .await
     }
 
@@ -436,6 +459,7 @@ impl Session {
             .map(|(device_id, member)| MemberSnapshot {
                 device_id: *device_id,
                 online: member.online,
+                nickname: member.nickname.clone(),
                 last_seen_elapsed: member.last_seen.elapsed(),
             })
             .collect()
@@ -562,11 +586,18 @@ impl SessionInner {
             neighbor_id,
             peer_addr,
         });
+        let nickname = self
+            .members
+            .lock()
+            .await
+            .get(&self.device_id)
+            .and_then(|member| member.nickname.clone());
         let _ = self
             .broadcast_message(member_changed_message(
                 self,
                 self.device_id,
                 MemberChange::Online,
+                Some(nickname),
             ))
             .await;
         Ok(neighbor_id)
@@ -678,8 +709,12 @@ impl SessionInner {
         .await;
         match message {
             Message::MemberChanged { payload, .. } => {
-                self.apply_member_change(payload.device_id, payload.change)
-                    .await;
+                self.apply_member_change(
+                    payload.device_id,
+                    payload.change,
+                    payload.nickname_updated.then(|| payload.nickname.clone()),
+                )
+                .await;
             }
             Message::RouteDiscoveryRequest { header, payload } => {
                 self.handle_route_discovery_request(neighbor_id, header, payload)
@@ -889,25 +924,75 @@ impl SessionInner {
             .retain(|target, route| *target != device_id && !route.path.contains(&device_id));
     }
 
-    async fn apply_member_change(&self, device_id: DeviceId, change: MemberChange) {
-        self.members.lock().await.insert(
-            device_id,
-            MemberEntry {
-                online: change == MemberChange::Online,
-                last_seen: Instant::now(),
-            },
-        );
+    async fn apply_member_change(
+        &self,
+        device_id: DeviceId,
+        change: MemberChange,
+        nickname_update: Option<Option<String>>,
+    ) {
+        let mut members = self.members.lock().await;
+        let member = members.entry(device_id).or_insert_with(|| MemberEntry {
+            online: false,
+            nickname: None,
+            last_seen: Instant::now(),
+        });
+        member.online = change == MemberChange::Online;
+        member.last_seen = Instant::now();
+        if let Some(nickname) = nickname_update {
+            member.nickname = nickname;
+        }
+        drop(members);
         if change == MemberChange::Offline {
             self.remove_routes_for_device(device_id).await;
         }
     }
 
     async fn note_neighbor_device(&self, neighbor_id: NeighborId, device_id: DeviceId) {
-        if let Some(neighbor) = self.neighbors.lock().await.get_mut(&neighbor_id) {
-            neighbor.device_id = Some(device_id);
-        }
-        self.apply_member_change(device_id, MemberChange::Online)
+        let newly_identified = self
+            .neighbors
+            .lock()
+            .await
+            .get_mut(&neighbor_id)
+            .is_some_and(|neighbor| {
+                if neighbor.device_id == Some(device_id) {
+                    false
+                } else {
+                    neighbor.device_id = Some(device_id);
+                    true
+                }
+            });
+        self.apply_member_change(device_id, MemberChange::Online, None)
             .await;
+        if newly_identified {
+            self.sync_members_to_neighbor(neighbor_id).await;
+        }
+    }
+
+    async fn sync_members_to_neighbor(&self, neighbor_id: NeighborId) {
+        let members: Vec<_> = self
+            .members
+            .lock()
+            .await
+            .iter()
+            .map(|(device_id, member)| (*device_id, member.online, member.nickname.clone()))
+            .collect();
+        for (device_id, online, nickname) in members {
+            let change = if online {
+                MemberChange::Online
+            } else {
+                MemberChange::Offline
+            };
+            if self
+                .send_message(
+                    neighbor_id,
+                    member_changed_message(self, device_id, change, Some(nickname)),
+                )
+                .await
+                .is_err()
+            {
+                return;
+            }
+        }
     }
 
     async fn remove_neighbor(self: &Arc<Self>, neighbor_id: NeighborId) {
@@ -921,7 +1006,7 @@ impl SessionInner {
                 peer_addr: neighbor.peer_addr,
             });
             if let Some(device_id) = neighbor.device_id {
-                self.apply_member_change(device_id, MemberChange::Offline)
+                self.apply_member_change(device_id, MemberChange::Offline, None)
                     .await;
                 self.remove_routes_for_device(device_id).await;
                 let _ = self
@@ -929,6 +1014,7 @@ impl SessionInner {
                         self,
                         device_id,
                         MemberChange::Offline,
+                        None,
                     ))
                     .await;
             }
@@ -1185,6 +1271,7 @@ fn member_changed_message(
     session: &SessionInner,
     device_id: DeviceId,
     change: MemberChange,
+    nickname_update: Option<Option<String>>,
 ) -> Message {
     Message::MemberChanged {
         header: MessageHeader {
@@ -1196,7 +1283,12 @@ fn member_changed_message(
             hop_count: 0,
             timestamp_ms: now_timestamp_ms(),
         },
-        payload: MemberChangedPayload { device_id, change },
+        payload: MemberChangedPayload {
+            device_id,
+            change,
+            nickname: nickname_update.clone().flatten(),
+            nickname_updated: nickname_update.is_some(),
+        },
     }
 }
 

@@ -52,6 +52,32 @@ pub(crate) fn announcement_targets(local_addr: SocketAddr) -> Vec<(SocketAddr, S
     targets
 }
 
+pub(crate) fn discovery_bind_addrs(bind_addr: SocketAddr) -> Vec<SocketAddr> {
+    discovery_bind_addrs_for_interfaces(bind_addr, system_network_interfaces())
+}
+
+fn discovery_bind_addrs_for_interfaces(
+    bind_addr: SocketAddr,
+    interfaces: Vec<(String, IpAddr)>,
+) -> Vec<SocketAddr> {
+    if !bind_addr.ip().is_unspecified() {
+        return vec![bind_addr];
+    }
+
+    let mut bind_addrs: Vec<_> = interfaces
+        .into_iter()
+        .map(|(_, ip)| ip)
+        .filter(IpAddr::is_ipv4)
+        .map(|ip| SocketAddr::new(ip, bind_addr.port()))
+        .collect();
+    bind_addrs.sort();
+    bind_addrs.dedup();
+    if bind_addrs.is_empty() {
+        bind_addrs.push(bind_addr);
+    }
+    bind_addrs
+}
+
 pub(crate) fn network_interfaces() -> Vec<NetworkInterfaceView> {
     let mut items: Vec<_> = system_network_interfaces()
         .into_iter()
@@ -129,6 +155,25 @@ mod tests {
         assert_eq!(
             announcement_targets(addr),
             vec![(SocketAddr::from(([127, 0, 0, 1], 0)), addr)]
+        );
+    }
+
+    #[test]
+    fn all_interface_discovery_binds_each_ipv4_interface() {
+        let bind_addrs = discovery_bind_addrs_for_interfaces(
+            "0.0.0.0:37020".parse().unwrap(),
+            vec![
+                ("Ethernet".to_string(), IpAddr::from([192, 168, 1, 10])),
+                ("Wi-Fi".to_string(), IpAddr::from([10, 0, 0, 5])),
+            ],
+        );
+
+        assert_eq!(
+            bind_addrs,
+            vec![
+                "10.0.0.5:37020".parse().unwrap(),
+                "192.168.1.10:37020".parse().unwrap(),
+            ]
         );
     }
 }

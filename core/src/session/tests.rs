@@ -718,6 +718,81 @@ async fn route_discovery_enables_direct_forward_and_offline_clears_route() {
 }
 
 #[tokio::test]
+async fn newly_joined_leaf_receives_members_that_are_not_direct_neighbors() {
+    let group_id = GroupId::new();
+    let remote_leaf_device = DeviceId::new();
+    let joining_leaf_device = DeviceId::new();
+    let relay = Session::with_config(DeviceId::new(), group_id, DeviceRole::Relay, fast_config());
+    let remote_leaf = Session::with_config(
+        remote_leaf_device,
+        group_id,
+        DeviceRole::Leaf,
+        fast_config(),
+    );
+    let joining_leaf = Session::with_config(
+        joining_leaf_device,
+        group_id,
+        DeviceRole::Leaf,
+        fast_config(),
+    );
+    let relay_addr = relay.listen("127.0.0.1:0".parse().unwrap()).await.unwrap();
+
+    remote_leaf.connect(relay_addr, None).await.unwrap();
+    wait_until(async || {
+        relay
+            .members()
+            .await
+            .iter()
+            .any(|member| member.device_id == remote_leaf_device && member.online)
+    })
+    .await;
+
+    joining_leaf.connect(relay_addr, None).await.unwrap();
+    wait_until(async || {
+        joining_leaf
+            .members()
+            .await
+            .iter()
+            .any(|member| member.device_id == remote_leaf_device && member.online)
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn member_snapshot_includes_the_remote_display_name() {
+    let group_id = GroupId::new();
+    let named_leaf_device = DeviceId::new();
+    let relay = Session::with_config(DeviceId::new(), group_id, DeviceRole::Relay, fast_config());
+    let named_leaf =
+        Session::with_config(named_leaf_device, group_id, DeviceRole::Leaf, fast_config());
+    let joining_leaf =
+        Session::with_config(DeviceId::new(), group_id, DeviceRole::Leaf, fast_config());
+    let relay_addr = relay.listen("127.0.0.1:0".parse().unwrap()).await.unwrap();
+
+    named_leaf.connect(relay_addr, None).await.unwrap();
+    named_leaf
+        .announce_nickname(Some("远端显示名".to_string()))
+        .await
+        .unwrap();
+    wait_until(async || {
+        relay.members().await.iter().any(|member| {
+            member.device_id == named_leaf_device
+                && member.nickname.as_deref() == Some("远端显示名")
+        })
+    })
+    .await;
+
+    joining_leaf.connect(relay_addr, None).await.unwrap();
+    wait_until(async || {
+        joining_leaf.members().await.iter().any(|member| {
+            member.device_id == named_leaf_device
+                && member.nickname.as_deref() == Some("远端显示名")
+        })
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn relay_announcement_is_collected_over_udp() {
     let group_id = GroupId::new();
     let relay_device = DeviceId::new();
