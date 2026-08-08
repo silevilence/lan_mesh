@@ -4,7 +4,7 @@
 
 ## 项目概述
 
-局域网 Mesh 通信软件。群组内允许任意数量设备加入,设备间只要存在任意直连链路即可,消息通过多跳转发到达目标(不要求全连通网状)。支持群发文本/文件消息与限定范围内的单聊。
+局域网 Mesh 通信软件。群组内允许任意数量设备加入,设备间只要存在任意直连链路即可,消息通过多跳转发到达目标(不要求全连通网状)。支持群发文本/文件消息、限定范围内的单聊与群组内更新包互助分发。
 
 - **Windows 端**:可作为 Relay(多连接中继)或 Leaf(单连接叶子)角色,使用 Tauri 框架。
 - **Android 端**:固定为 Leaf 角色,仅维护单条连接,不承担多路转发/路由发现职责。
@@ -113,6 +113,7 @@ Refs: ROADMAP OPDS 书源服务构建与分发
   - `protocol.rs`: ID、消息结构、序列化辅助、时间戳辅助。
   - `frame.rs`: "4字节长度前缀 + JSON消息体"帧读写与帧错误。
   - `session.rs`: 会话、连接、路由、成员状态、Relay/Leaf 行为。
+  - `file_transfer.rs`: 文件分片读写、断点续传、SHA256 校验、更新包元数据消息构造。
   - `session/tests.rs`: core 单元测试,可访问会话内部状态验证隔离与路由行为。
 - 新增 core 代码时优先放入已有职责模块;只有出现稳定的新职责边界时才新增模块,避免把实现重新堆回 `lib.rs`。
 - 异步运行时统一使用 `tokio`,禁止引入其他异步运行时(如 async-std)造成运行时冲突。
@@ -131,13 +132,19 @@ Refs: ROADMAP OPDS 书源服务构建与分发
 - `src-tauri/src/` 模块职责(新增代码优先放入已有职责模块):
   - `lib.rs`:Tauri 应用入口,注册插件(`tauri-plugin-updater`)、状态与 command handler,声明 `DEFAULT_TTL`/`DISCOVERY_PORT` 常量。
   - `commands.rs`:全部 Tauri command,仅做参数校验与转调 `core` 接口。
-  - `events.rs`:`forward_events` 将 `SessionEvent` 转发为前端事件,并处理文件分片接收组装、断点续传重发。
-  - `updates.rs`:`check_update`/`install_update` 命令,转调 `tauri-plugin-updater`;待安装更新暂存于 `PendingUpdate` 状态。
-  - `state.rs`:`AppState`、`ClientSession`、`SentFiles`/`ReceivedFiles` 等跨 command 共享状态。
-  - `network.rs`:网卡枚举、广播发现目标计算、地址解析。
+  - `events.rs`:`forward_events` 将 `SessionEvent` 转发为前端事件,并处理文件/更新包分片接收组装、断点续传重发。
+  - `updates.rs`:`check_update`/`install_update` 命令、保留安装包存储(`RetainedUpdatePackage`)、接收更新包的版本校验与本地安装执行;待安装更新暂存于 `PendingUpdate` 状态。
+  - `transfers.rs`:`send_file_from_client` 统一文件发送路径,`send_file` 与 `share_retained_update_package` 共用。
+  - `groups.rs`:`restore_saved_groups` 启动时恢复已保存群组并后台自动重连。
+  - `persistence.rs`:`GroupStore` 群组持久化(app_local_data_dir 下 `groups.json`)。
+  - `notifications.rs`:窗口隐藏时的新消息 Windows 桌面通知,点击通知打开主界面。
+  - `tray.rs`:托盘图标与菜单、关闭/最小化驻留托盘、主窗口显示/隐藏。
+  - `state.rs`:`AppState`、`ClientSession`、`SentFiles`/`ReceivedFiles`/`ReceivedUpdatePackages` 等跨 command 共享状态。
+  - `network.rs`:网卡枚举、广播发现目标计算、地址解析、多网卡并行发现的绑定地址计算。
   - `views.rs`:面向前端的序列化视图结构与转换函数。
   - `ids.rs`:ID/角色/错误等参数解析与格式化辅助。
 - 自动更新相关约束:启动时仅检查并提示,不得静默下载/安装/重启;下载安装必须经用户确认,安装完成后由用户选择是否重启。updater 公钥写在 `tauri.conf.json`,私钥与密码仅通过 GitHub Actions Secrets 注入,禁止提交到仓库。
+- 更新互助约束:更新分享的唯一来源是"保留安装包"(`get_retained_update_package`,官方更新流程安装前保存的最新一份安装包);接收端安装前必须通过 SHA256 完整性校验,且包版本必须严格高于当前版本,不得安装同版本或旧版本。
 
 ## Android 客户端(android-app)开发规范
 
@@ -155,26 +162,27 @@ Refs: ROADMAP OPDS 书源服务构建与分发
 
 - 标识类型:`DeviceId`、`GroupId`、`MessageId`、`FileId`、`NeighborId`(均基于 UUID 封装,`#[serde(transparent)]`)。
 - 角色与目标:`DeviceRole`(`Relay`/`Leaf`)、`MessageTarget`(`Broadcast`/`Device { device_id }`)。
-- 消息:`Message` 枚举(内部标签 `#[serde(tag = "type")]`),变体 `Text`/`FileChunk`/`FileResumeRequest`/`Heartbeat`/`MemberChanged`/`RouteDiscoveryRequest`/`RouteDiscoveryResponse`,各含 `header: MessageHeader` 与对应 payload。
+- 消息:`Message` 枚举(内部标签 `#[serde(tag = "type")]`),变体 `Text`/`FileChunk`/`FileResumeRequest`/`UpdatePackage`/`Heartbeat`/`MemberChanged`/`RouteDiscoveryRequest`/`RouteDiscoveryResponse`,各含 `header: MessageHeader` 与对应 payload。
 - 序列化辅助:`message_to_json`、`message_from_json`、`now_timestamp_ms`、`encode_file_chunk_data`、`decode_file_chunk_data`。
 - 帧(`frame.rs`):`MAX_FRAME_LEN`、`FrameError`、`write_message_frame`、`read_message_frame`。
-- 会话(`session.rs`):`Session` 关键方法 `new`/`with_config`/`create_group`/`join_group`/`subscribe`/`role`/`device_id`/`listen`/`connect`/`send_message`/`broadcast_message`/`route_message`/`send_group_message`/`send_direct_message`/`discover_route`/`routes`/`members`/`neighbors`/`announce_member_change`/`member_changed_message`/`start_relay_announcement`/`discover_relays`/`destroy`;事件类型 `SessionEvent`(`NeighborOnline`/`NeighborOffline`/`MessageReceived`);快照 `NeighborSnapshot`/`MemberSnapshot`/`RouteSnapshot`/`RelayAnnouncement`;配置与错误 `ConnectionConfig`/`NetworkError`。
-- 文件传输(`file_transfer.rs`):`FILE_CHUNK_SIZE`、`FileChunkReader`、`FileAssembler`、`FileAssemblyStatus`、`FileTransferError`、`resend_file_chunks`、`file_resume_request_message`、`sha256_file`。
+- 会话(`session.rs`):`Session` 关键方法 `new`/`with_config`/`create_group`/`join_group`/`subscribe`/`role`/`device_id`/`listen`/`connect`/`send_message`/`broadcast_message`/`route_message`/`send_group_message`/`send_group_message_with_nickname`/`send_direct_message`/`send_direct_message_with_nickname`/`discover_route`/`routes`/`members`/`neighbors`/`announce_member_change`/`announce_nickname`/`member_changed_message`/`start_relay_announcement`/`discover_relays`/`destroy`;事件类型 `SessionEvent`(`NeighborOnline`/`NeighborOffline`/`MessageReceived`);快照 `NeighborSnapshot`/`MemberSnapshot`/`RouteSnapshot`/`RelayAnnouncement`;配置与错误 `ConnectionConfig`/`NetworkError`。
+- 文件传输(`file_transfer.rs`):`FILE_CHUNK_SIZE`、`FileChunkReader`、`FileAssembler`、`FileAssemblyStatus`、`FileTransferError`、`resend_file_chunks`、`file_resume_request_message`、`update_package_message`、`sha256_file`。
 
 ### Tauri commands(`tauri-app/src-tauri/src/commands.rs` + `updates.rs`)
 
-每个 command 仅做参数校验并转调 `core` 接口,不写业务逻辑(`updates.rs` 中的更新检查/安装命令除外,它们转调 `tauri-plugin-updater`):
+每个 command 仅做参数校验并转调 `core` 接口,不写业务逻辑(`updates.rs` 中的更新检查/安装命令除外,它们转调 `tauri-plugin-updater` 或执行本地安装):
 
-- 会话与消息:`create_group`、`discover_relays`、`join_group`、`close_session`、`send_group_text`、`send_direct_text`。
-- 文件传输:`send_file`、`resume_file_transfer`、`request_file_resume`、`pick_file`、`save_file_as`。
-- 状态与网络:`get_members`、`get_connection_status`、`list_network_interfaces`、`probe_relay_addr`(用于分享码解析时从候选中继地址探测可用项并回填本机网卡)。
-- 自动更新(`updates.rs`):`check_update`(检查并暂存待安装更新,返回版本号/发布时间/更新说明)、`install_update`(下载并安装已暂存的更新,由用户确认后重启)。
+- 会话与消息:`create_group`、`discover_relays`、`join_group`、`close_session`、`list_saved_groups`、`activate_saved_group`、`retry_saved_group`、`delete_saved_group`、`send_group_text`、`send_direct_text`、`announce_nickname`。
+- 文件传输:`send_file`、`resume_file_transfer`、`request_file_resume`、`pick_file`、`save_temp_file`、`save_file_as`。
+- 状态与网络:`get_members`、`get_connection_status`、`list_network_interfaces`、`probe_relay_addr`(用于分享码解析时从候选中继地址探测可用项并回填本机网卡)、`app_version`。
+- 托盘与通知(`tray.rs`/`notifications.rs`):`set_close_to_tray`、`open_main_window`、`is_main_window_visible`、`set_notifications_enabled`。
+- 自动更新与更新互助(`updates.rs`):`check_update`(检查并暂存待安装更新,返回版本号/发布时间/更新说明)、`install_update`(下载并安装已暂存的更新,由用户确认后重启)、`set_retain_installer`、`get_retained_update_package`、`share_retained_update_package`(向指定群组发送保留安装包)、`install_received_update_package`(校验并启动本地安装,退出应用)。
 
 ### 前端事件通道(`tauri-app/src-tauri/src/events.rs`)
 
 核心库事件经 `forward_events` 转发到前端,前端通过 `tauri.event.listen(...)` 订阅,禁止轮询:
 
-`mesh://neighbor-online`、`mesh://neighbor-offline`、`mesh://message-received`、`mesh://member-changed`、`mesh://transfer-progress`。
+`mesh://neighbor-online`、`mesh://neighbor-offline`、`mesh://message-received`、`mesh://member-changed`、`mesh://transfer-progress`、`mesh://groups-changed`、`mesh://update-package-ready`、`mesh://notification-opened`。
 
 ## 构建与验证命令
 
@@ -184,6 +192,9 @@ cargo build
 
 # 运行核心库测试(会话隔离、去重、路径发现等单元测试)
 cargo test -p core
+
+# 运行桌面端 Rust 单元测试(updates.rs/events.rs/commands.rs 中的 #[cfg(test)] 模块)
+cargo test -p lan-mesh-tauri
 
 # Windows 客户端本地开发运行
 cd tauri-app && cargo tauri dev
@@ -202,8 +213,14 @@ cd core-ffi && cargo build --release --target <android-target>
 ## 测试规范
 
 - 单元测试集中在 `core/src/session/tests.rs`,可直接访问会话内部状态,验证会话隔离、消息去重、路径发现等行为。
-- 运行:`cargo test -p core`。
+- 桌面端 `tauri-app/src-tauri` 的 `updates.rs`/`events.rs`/`commands.rs` 内含少量 `#[cfg(test)]` 单元测试(如版本比较、序列化视图、更新包匹配)。
+- 运行:`cargo test -p core`(核心库)、`cargo test -p lan-mesh-tauri`(桌面端)。
 - 修改 `session.rs` 内部结构后,优先补/调对应测试,保证多会话状态隔离与路由行为不回归。
+
+## 发布流程
+
+- 发布版本号只维护两处,必须保持一致:`tauri-app/src-tauri/Cargo.toml` 的 `[package] version` 与 `tauri-app/src-tauri/tauri.conf.json` 的 `version`。
+- 打 `v*`/`V*` 格式的 tag 会触发 `.github/workflows/release.yml`:校验 tag 与上述两处版本号一致、从 `CHANGELOG.md` 提取对应 `## V<version>` 条目作为发布说明,然后构建 NSIS 安装包并发布 GitHub Release(签名私钥来自 Actions Secrets)。
 
 ## 提交前检查清单
 
