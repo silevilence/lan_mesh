@@ -5,8 +5,7 @@ use crate::{
     persistence::{GroupAvailability, GroupStore},
     state::{ReceivedFiles, ReceivedUpdatePackage, ReceivedUpdatePackages, SentFiles},
     views::{
-        MemberEvent, MessageEvent, NeighborEvent, TransferProgressEvent, UpdatePackageEvent,
-        UpdatePackageReadyEvent,
+        MemberEvent, MessageEvent, NeighborEvent, TransferProgressEvent, UpdatePackageReadyEvent,
     },
 };
 use lan_mesh_core::{
@@ -229,7 +228,7 @@ async fn emit_message_side_events(
                     app,
                     "LAN Mesh 文件已接收",
                     &payload.file_name,
-                    NotificationTarget::new(id(group_id.0), target_device_id(header)),
+                    NotificationTarget::new(id(group_id.0), notification_target_device_id(header)),
                 );
                 if let Some(path) = event.path.as_ref().map(PathBuf::from) {
                     let package = {
@@ -268,25 +267,13 @@ async fn emit_message_side_events(
                     path: None,
                 },
             );
-            let _ = app.emit(
-                "mesh://update-package",
-                UpdatePackageEvent {
-                    group_id: id(group_id.0),
-                    file_id: id(payload.file_id.0),
-                    version: payload.version.clone(),
-                    file_name: payload.file_name.clone(),
-                    total_size: payload.total_size,
-                    sha256: payload.sha256.clone(),
-                    source_device_id: id(payload.source_device_id.0),
-                },
-            );
         }
         Message::Text { header, payload } => {
             notify_when_hidden(
                 app,
                 "LAN Mesh 新消息",
                 &payload.content,
-                NotificationTarget::new(id(group_id.0), target_device_id(header)),
+                NotificationTarget::new(id(group_id.0), notification_target_device_id(header)),
             );
         }
         _ => {}
@@ -430,6 +417,13 @@ fn target_device_id(header: &MessageHeader) -> Option<String> {
     }
 }
 
+fn notification_target_device_id(header: &MessageHeader) -> Option<String> {
+    match &header.target {
+        MessageTarget::Broadcast => None,
+        MessageTarget::Device { .. } => Some(id(header.source_device_id.0)),
+    }
+}
+
 fn safe_file_name(value: &str) -> String {
     let name = PathBuf::from(value)
         .file_name()
@@ -447,7 +441,33 @@ fn safe_file_name(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lan_mesh_core::FileId;
+    use lan_mesh_core::{DeviceId, FileId, GroupId, MessageId};
+
+    #[test]
+    fn notification_target_opens_group_for_broadcast_and_sender_for_direct_message() {
+        let source_device_id = DeviceId::new();
+        let base = MessageHeader {
+            message_id: MessageId::new(),
+            group_id: GroupId::new(),
+            source_device_id,
+            target: MessageTarget::Broadcast,
+            ttl: 8,
+            hop_count: 0,
+            timestamp_ms: 0,
+        };
+        assert_eq!(notification_target_device_id(&base), None);
+
+        let direct = MessageHeader {
+            target: MessageTarget::Device {
+                device_id: DeviceId::new(),
+            },
+            ..base
+        };
+        assert_eq!(
+            notification_target_device_id(&direct),
+            Some(id(source_device_id.0))
+        );
+    }
 
     #[tokio::test]
     async fn receive_file_chunk_assembles_one_file() {

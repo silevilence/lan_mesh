@@ -14,7 +14,7 @@ use crate::{
     views::{
         ConnectionStatus, MemberView, NeighborView, NetworkInterfaceView, ProbeRelayResponse,
         RelayAnnouncementView, ResumeFileResponse, SavedGroupView, SendFileResponse,
-        SessionResponse, SharedUpdatePackageResponse, relay_view, route_view, saved_group_view,
+        SessionResponse, ShareUpdatePackagesResponse, relay_view, route_view, saved_group_view,
         session_response,
     },
 };
@@ -561,7 +561,7 @@ pub(crate) async fn share_retained_update_package(
     app: AppHandle,
     state: State<'_, AppState>,
     group_ids: Vec<String>,
-) -> Result<Vec<SharedUpdatePackageResponse>, String> {
+) -> Result<ShareUpdatePackagesResponse, String> {
     if group_ids.is_empty() {
         return Err("请选择至少一个群组".to_string());
     }

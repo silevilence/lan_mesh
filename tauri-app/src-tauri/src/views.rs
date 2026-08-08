@@ -122,17 +122,6 @@ pub(crate) struct TransferProgressEvent {
 }
 
 #[derive(Clone, Serialize)]
-pub(crate) struct UpdatePackageEvent {
-    pub(crate) group_id: String,
-    pub(crate) file_id: String,
-    pub(crate) version: String,
-    pub(crate) file_name: String,
-    pub(crate) total_size: u64,
-    pub(crate) sha256: String,
-    pub(crate) source_device_id: String,
-}
-
-#[derive(Clone, Serialize)]
 pub(crate) struct UpdatePackageReadyEvent {
     pub(crate) group_id: String,
     pub(crate) file_id: String,
@@ -175,6 +164,12 @@ pub(crate) struct ResumeFileResponse {
 pub(crate) struct SharedUpdatePackageResponse {
     pub(crate) group_id: String,
     pub(crate) file_id: String,
+}
+
+#[derive(Serialize)]
+pub(crate) struct ShareUpdatePackagesResponse {
+    pub(crate) shared: Vec<SharedUpdatePackageResponse>,
+    pub(crate) failed_groups: Vec<String>,
 }
 
 pub(crate) fn session_response(

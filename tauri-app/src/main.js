@@ -24,6 +24,8 @@ const state = {
   groupMessages: [],
   directMessages: new Map(),
   transfers: new Map(),
+  deferredUpdateMessages: new Map(),
+  deferredUpdateReady: new Map(),
 };
 
 const $ = (id) => document.querySelector(`#${id}`);
@@ -169,6 +171,7 @@ function setSession(session, groupName = "") {
   state.groupMessages = [];
   state.directMessages.clear();
   state.transfers.clear();
+  restoreDeferredUpdates(session.group_id);
   rememberNickname(session.device_id, state.settings.nickname);
   setStatus(sessionLabel());
   $("manual-group-id").value = session.group_id;
@@ -444,7 +447,13 @@ function addIncoming(message) {
 }
 
 async function installReceivedUpdate(item) {
-  if (!confirm(`确认安装更新包 v${item.version}？程序将退出并启动本地安装程序。`)) return;
+  const source = item.from ? short(item.from) : "未知设备";
+  const message = [
+    `确认安装来自局域网设备 ${source} 的更新包 v${item.version}？`,
+    "程序将退出并启动本地安装程序。",
+    "该包仅完成完整性校验，未验证发布签名；请仅在信任来源时继续。",
+  ].join("\n\n");
+  if (!confirm(message)) return;
   try {
     await call("install_received_update_package", { fileId: item.file_id });
   } catch (err) {
@@ -462,6 +471,31 @@ function markUpdatePackageReady(payload) {
       renderMessages();
       return;
     }
+  }
+}
+
+function deferUpdateMessage(groupId, message) {
+  const pending = state.deferredUpdateMessages.get(groupId) || [];
+  const fileId = payloadOf(message).file_id;
+  if (!pending.some((item) => payloadOf(item).file_id === fileId)) pending.push(message);
+  state.deferredUpdateMessages.set(groupId, pending);
+}
+
+function deferUpdateReady(payload) {
+  const pending = state.deferredUpdateReady.get(payload.group_id) || new Map();
+  pending.set(payload.file_id, payload);
+  state.deferredUpdateReady.set(payload.group_id, pending);
+}
+
+function restoreDeferredUpdates(groupId) {
+  const messages = state.deferredUpdateMessages.get(groupId) || [];
+  state.deferredUpdateMessages.delete(groupId);
+  for (const message of messages) addIncoming(message);
+
+  const ready = state.deferredUpdateReady.get(groupId);
+  state.deferredUpdateReady.delete(groupId);
+  if (ready) {
+    for (const payload of ready.values()) markUpdatePackageReady(payload);
   }
 }
 
@@ -873,7 +907,7 @@ async function openShareUpdateDialog() {
       setStatus("请先检查更新获取安装包");
       return;
     }
-    $("share-update-summary").textContent = `将分享更新包 v${update.version} · ${update.file_name} · ${formatBytes(update.total_size)}`;
+    $("share-update-summary").textContent = `将分享更新包 v${update.version} · ${update.fileName} · ${formatBytes(update.totalSize)}`;
     const groups = $("share-update-groups");
     groups.innerHTML = "";
     for (const group of state.savedGroups) {
@@ -900,9 +934,10 @@ async function shareRetainedUpdatePackage(event) {
   event.preventDefault();
   const groupIds = [...document.querySelectorAll('input[name="share-update-group"]:checked')].map((input) => input.value);
   try {
-    const shared = await call("share_retained_update_package", { groupIds });
+    const result = await call("share_retained_update_package", { groupIds });
     closeDialog("share-update-dialog");
-    setStatus(`已向 ${shared.length} 个群组发送更新包`);
+    const failed = result.failed_groups?.length || result.failedGroups?.length || 0;
+    setStatus(`已向 ${result.shared.length} 个群组发送更新包${failed ? `，${failed} 个群组发送失败` : ""}`);
   } catch (err) {
     setStatus(`分享更新包失败：${err}`);
   }
@@ -1183,7 +1218,13 @@ if (listen) {
         void openNotificationTarget(payload);
         return;
       }
-      if (payload?.group_id && payload.group_id !== state.session?.group_id) return;
+      if (payload?.group_id && payload.group_id !== state.session?.group_id) {
+        if (name === "mesh://message-received" && payload?.message?.type === "update_package") {
+          deferUpdateMessage(payload.group_id, payload.message);
+        }
+        if (name === "mesh://update-package-ready") deferUpdateReady(payload);
+        return;
+      }
       if (name === "mesh://message-received") addIncoming(payload.message);
       if (name === "mesh://neighbor-offline") {
         markInterruptedTransfers("连接中断");

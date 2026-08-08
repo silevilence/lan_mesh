@@ -67,8 +67,12 @@ pub(crate) fn notify_when_hidden(
             .summary(&title)
             .body(&body)
             .app_id("dev.lanmesh.desktop");
-        let Ok(handle) = notification.show() else {
-            return;
+        let handle = match notification.show() {
+            Ok(handle) => handle,
+            Err(error) => {
+                eprintln!("failed to show Windows notification: {error}");
+                return;
+            }
         };
         let _ = handle.wait_for_response(move |response: &NotificationResponse| {
             if response == &NotificationResponse::Default {

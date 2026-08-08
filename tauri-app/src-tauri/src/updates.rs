@@ -2,7 +2,7 @@ use crate::{
     ids::{err_string, id},
     state::AppState,
     transfers::send_file_from_client,
-    views::SharedUpdatePackageResponse,
+    views::{ShareUpdatePackagesResponse, SharedUpdatePackageResponse},
 };
 use lan_mesh_core::{FileId, GroupId, MessageTarget};
 use std::{
@@ -153,7 +153,9 @@ pub(crate) async fn install_update(
         .map_err(|_| "update settings are unavailable".to_string())?
         .retain_installer;
     if retain_installer {
-        store_retained_update_package(&app, &update, &bytes).await?;
+        if let Err(error) = store_retained_update_package(&app, &update, &bytes).await {
+            eprintln!("failed to retain update package: {error}");
+        }
     }
     update.install(&bytes).map_err(|err| err.to_string())
 }
@@ -283,24 +285,18 @@ pub(crate) async fn share_retained_update_package(
     app: &AppHandle,
     state: &AppState,
     group_ids: Vec<GroupId>,
-) -> Result<Vec<SharedUpdatePackageResponse>, String> {
+) -> Result<ShareUpdatePackagesResponse, String> {
     let package = retained_update_package(app)
         .await?
         .ok_or_else(|| "请先检查更新获取安装包".to_string())?;
-    let mut clients = Vec::with_capacity(group_ids.len());
-    {
-        let active_clients = state.clients.lock().await;
-        for group_id in group_ids {
-            let client = active_clients
-                .get(&group_id)
-                .cloned()
-                .ok_or_else(|| "所选群组当前不可连接".to_string())?;
-            clients.push(client);
-        }
-    }
-
-    let mut shared = Vec::with_capacity(clients.len());
-    for client in clients {
+    let mut shared = Vec::with_capacity(group_ids.len());
+    let mut failed_groups = Vec::new();
+    for group_id in group_ids {
+        let client = state.clients.lock().await.get(&group_id).cloned();
+        let Some(client) = client else {
+            failed_groups.push(id(group_id.0));
+            continue;
+        };
         let transfer = send_file_from_client(
             app,
             &state.sent_files,
@@ -310,13 +306,22 @@ pub(crate) async fn share_retained_update_package(
             None,
             Some(&package.version),
         )
-        .await?;
-        shared.push(SharedUpdatePackageResponse {
-            group_id: id(client.group_id.0),
-            file_id: transfer.file_id,
-        });
+        .await;
+        match transfer {
+            Ok(transfer) => shared.push(SharedUpdatePackageResponse {
+                group_id: id(client.group_id.0),
+                file_id: transfer.file_id,
+            }),
+            Err(_) => failed_groups.push(id(client.group_id.0)),
+        }
     }
-    Ok(shared)
+    if shared.is_empty() {
+        return Err("所选群组当前都无法发送更新包".to_string());
+    }
+    Ok(ShareUpdatePackagesResponse {
+        shared,
+        failed_groups,
+    })
 }
 
 pub(crate) async fn install_received_update_package(
@@ -410,5 +415,21 @@ mod tests {
         assert!(is_newer_version(&newer));
         assert!(!is_newer_version(&current.to_string()));
         assert!(!is_newer_version("not-a-version"));
+    }
+
+    #[test]
+    fn retained_update_package_uses_camel_case_for_the_frontend() {
+        let package = RetainedUpdatePackage {
+            version: "0.4.0".to_string(),
+            file_name: "LAN-Mesh-setup.exe".to_string(),
+            total_size: 1024,
+            sha256: "abc".to_string(),
+            path: PathBuf::from("update.exe"),
+        };
+
+        let value = serde_json::to_value(package).unwrap();
+        assert_eq!(value["fileName"], "LAN-Mesh-setup.exe");
+        assert_eq!(value["totalSize"], 1024);
+        assert!(value.get("path").is_none());
     }
 }
