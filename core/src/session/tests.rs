@@ -157,6 +157,34 @@ fn update_package_metadata_uses_internal_type_tag() {
 }
 
 #[test]
+fn update_package_message_populates_the_routable_header() {
+    let file_id = FileId::new();
+    let group_id = GroupId::new();
+    let source_device_id = DeviceId::new();
+    let message = update_package_message(
+        file_id,
+        "0.4.0".to_string(),
+        "LAN-Mesh-setup.exe".to_string(),
+        42,
+        "abc123".to_string(),
+        group_id,
+        source_device_id,
+        MessageTarget::Broadcast,
+        8,
+    );
+
+    let Message::UpdatePackage { header, payload } = message else {
+        panic!("update metadata must use the update_package message variant");
+    };
+    assert_eq!(header.group_id, group_id);
+    assert_eq!(header.source_device_id, source_device_id);
+    assert_eq!(header.ttl, 8);
+    assert_eq!(header.hop_count, 0);
+    assert_eq!(payload.file_id, file_id);
+    assert_eq!(payload.source_device_id, source_device_id);
+}
+
+#[test]
 fn file_chunk_encoding_helpers_round_trip() {
     let data = [0, 1, 2, 3, 255];
 

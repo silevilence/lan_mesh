@@ -1,6 +1,6 @@
 use crate::{
     DeviceId, FileChunkPayload, FileId, FileResumeRequestPayload, GroupId, Message, MessageHeader,
-    MessageId, MessageTarget, now_timestamp_ms,
+    MessageId, MessageTarget, UpdatePackagePayload, now_timestamp_ms,
 };
 use sha2::{Digest, Sha256};
 use std::{
@@ -349,6 +349,40 @@ pub fn file_resume_request_message(
         payload: FileResumeRequestPayload {
             file_id,
             missing_chunks,
+        },
+    }
+}
+
+/// Builds the metadata message that precedes an update package file transfer.
+/// The following file chunks retain the normal resumable transfer behavior.
+pub fn update_package_message(
+    file_id: FileId,
+    version: String,
+    file_name: String,
+    total_size: u64,
+    sha256: String,
+    group_id: GroupId,
+    source_device_id: DeviceId,
+    target: MessageTarget,
+    ttl: u8,
+) -> Message {
+    Message::UpdatePackage {
+        header: MessageHeader {
+            message_id: MessageId::new(),
+            group_id,
+            source_device_id,
+            target,
+            ttl,
+            hop_count: 0,
+            timestamp_ms: now_timestamp_ms(),
+        },
+        payload: UpdatePackagePayload {
+            file_id,
+            version,
+            file_name,
+            total_size,
+            sha256,
+            source_device_id,
         },
     }
 }

@@ -1,19 +1,21 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use tauri::{
-    App, AppHandle, Emitter, Manager, State, WindowEvent,
+    App, AppHandle, Manager, State, WindowEvent,
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
 
 pub(crate) struct TraySettings {
     close_to_tray: AtomicBool,
+    first_hide: AtomicBool,
 }
 
 impl Default for TraySettings {
     fn default() -> Self {
         Self {
             close_to_tray: AtomicBool::new(true),
+            first_hide: AtomicBool::new(true),
         }
     }
 }
@@ -92,8 +94,15 @@ pub(crate) fn is_main_window_visible(app: AppHandle) -> bool {
 }
 
 fn hide_main_window(window: &tauri::WebviewWindow) {
+    let settings = window.state::<TraySettings>();
+    if settings.first_hide.swap(false, Ordering::Relaxed) {
+        rfd::MessageDialog::new()
+            .set_title("LAN Mesh 将驻留到托盘")
+            .set_description("应用会继续在系统托盘中运行。请通过托盘图标打开主界面或退出程序。")
+            .set_buttons(rfd::MessageButtons::Ok)
+            .show();
+    }
     let _ = window.hide();
-    let _ = window.emit("mesh://tray-hidden", ());
 }
 
 pub(crate) fn show_main_window(app: &AppHandle) {

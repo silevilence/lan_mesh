@@ -1,7 +1,9 @@
+// This no-bundler entry point remains intentionally centralized while the UI
+// stays small; split it into native ES modules when another independent view
+// or a second notification workflow is added.
 const tauri = window.__TAURI__;
 const invoke = tauri?.core?.invoke ?? tauri?.invoke;
 const listen = tauri?.event?.listen;
-const notification = tauri?.notification;
 
 document.querySelectorAll("form,input").forEach((node) => {
   node.autocomplete = "off";
@@ -67,6 +69,7 @@ async function syncDesktopSettings() {
   try {
     await Promise.all([
       call("set_close_to_tray", { enabled: state.settings.closeToTray }),
+      call("set_notifications_enabled", { enabled: state.settings.notificationsEnabled }),
       call("set_retain_installer", { enabled: state.settings.retainInstaller }),
     ]);
   } catch (err) {
@@ -905,17 +908,6 @@ async function shareRetainedUpdatePackage(event) {
   }
 }
 
-async function notifyWhenHidden({ title, body, groupId, deviceId = null }) {
-  if (!state.settings.notificationsEnabled || !notification?.sendNotification) return;
-  try {
-    const visible = await call("is_main_window_visible");
-    if (visible) return;
-    notification.sendNotification({ title, body, extra: { groupId, deviceId: deviceId || "" } });
-  } catch (err) {
-    log("notification failed", text(err));
-  }
-}
-
 async function openNotificationTarget(data = {}) {
   await call("open_main_window");
   const group = state.savedGroups.find((item) => item.group_id === data.groupId);
@@ -1179,7 +1171,7 @@ if (listen) {
     "mesh://groups-changed",
     "mesh://update-progress",
     "mesh://update-package-ready",
-    "mesh://tray-hidden",
+    "mesh://notification-opened",
   ]) {
     listen(name, ({ payload }) => {
       log(name, payload);
@@ -1187,32 +1179,9 @@ if (listen) {
         loadSavedGroups();
         return;
       }
-      if (name === "mesh://tray-hidden") {
-        if (!state.settings.trayNoticeAcknowledged) {
-          state.settings.trayNoticeAcknowledged = true;
-          saveSettings();
-          alert("LAN Mesh 会继续在托盘中运行。请通过托盘图标的“打开主界面”或“退出程序”管理应用。");
-        }
+      if (name === "mesh://notification-opened") {
+        void openNotificationTarget(payload);
         return;
-      }
-      if (name === "mesh://message-received" && payload?.message?.type === "text") {
-        const message = payload.message;
-        if (sourceOf(message) !== state.session?.device_id) {
-          void notifyWhenHidden({
-            title: "LAN Mesh 新消息",
-            body: payloadOf(message).content || "收到一条新消息",
-            groupId: payload.group_id,
-            deviceId: sourceOf(message),
-          });
-        }
-      }
-      if (name === "mesh://update-package-ready") {
-        void notifyWhenHidden({
-          title: "LAN Mesh 更新包已接收",
-          body: `更新包 v${payload.version} 已校验完成`,
-          groupId: payload.group_id,
-          deviceId: payload.source_device_id,
-        });
       }
       if (payload?.group_id && payload.group_id !== state.session?.group_id) return;
       if (name === "mesh://message-received") addIncoming(payload.message);
@@ -1229,12 +1198,6 @@ if (listen) {
       }
     });
   }
-}
-
-if (notification?.onAction) {
-  notification.onAction((event) => {
-    void openNotificationTarget(event?.extra || event?.data || {});
-  });
 }
 
 $("nickname").value = state.settings.nickname;

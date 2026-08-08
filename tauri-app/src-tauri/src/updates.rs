@@ -1,5 +1,16 @@
+use crate::{
+    ids::{err_string, id},
+    state::AppState,
+    transfers::send_file_from_client,
+    views::SharedUpdatePackageResponse,
+};
+use lan_mesh_core::{FileId, GroupId, MessageTarget};
 use std::{
+    ffi::OsStr,
+    fs::File,
+    io,
     path::{Path, PathBuf},
+    process::Command,
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
@@ -266,6 +277,125 @@ pub(crate) fn is_newer_version(version: &str) -> bool {
     let received = semver::Version::parse(version.trim_start_matches('v'));
     let current = semver::Version::parse(env!("CARGO_PKG_VERSION"));
     matches!((received, current), (Ok(received), Ok(current)) if received > current)
+}
+
+pub(crate) async fn share_retained_update_package(
+    app: &AppHandle,
+    state: &AppState,
+    group_ids: Vec<GroupId>,
+) -> Result<Vec<SharedUpdatePackageResponse>, String> {
+    let package = retained_update_package(app)
+        .await?
+        .ok_or_else(|| "请先检查更新获取安装包".to_string())?;
+    let mut clients = Vec::with_capacity(group_ids.len());
+    {
+        let active_clients = state.clients.lock().await;
+        for group_id in group_ids {
+            let client = active_clients
+                .get(&group_id)
+                .cloned()
+                .ok_or_else(|| "所选群组当前不可连接".to_string())?;
+            clients.push(client);
+        }
+    }
+
+    let mut shared = Vec::with_capacity(clients.len());
+    for client in clients {
+        let transfer = send_file_from_client(
+            app,
+            &state.sent_files,
+            &client,
+            package.path.to_string_lossy().into_owned(),
+            MessageTarget::Broadcast,
+            None,
+            Some(&package.version),
+        )
+        .await?;
+        shared.push(SharedUpdatePackageResponse {
+            group_id: id(client.group_id.0),
+            file_id: transfer.file_id,
+        });
+    }
+    Ok(shared)
+}
+
+pub(crate) async fn install_received_update_package(
+    app: &AppHandle,
+    state: &AppState,
+    file_id: FileId,
+) -> Result<(), String> {
+    let package = state
+        .received_update_packages
+        .lock()
+        .await
+        .get(&file_id)
+        .cloned()
+        .ok_or_else(|| "更新包元数据不存在".to_string())?;
+    let path = package
+        .path
+        .ok_or_else(|| "更新包尚未完成或未通过校验".to_string())?;
+    if !is_newer_version(&package.metadata.version) {
+        return Err(format!(
+            "更新包版本 {} 不高于当前版本 {}",
+            package.metadata.version,
+            env!("CARGO_PKG_VERSION")
+        ));
+    }
+    tokio::task::spawn_blocking(move || run_received_installer(&path))
+        .await
+        .map_err(err_string)??;
+    app.exit(0);
+    Ok(())
+}
+
+fn run_received_installer(path: &Path) -> Result<(), String> {
+    let installer = if path.extension() == Some(OsStr::new("zip")) {
+        extract_installer(path)?
+    } else {
+        path.to_path_buf()
+    };
+    match installer.extension().and_then(OsStr::to_str) {
+        Some("exe") => Command::new(&installer)
+            .spawn()
+            .map_err(|err| format!("无法启动更新安装包: {err}"))?,
+        Some("msi") => Command::new("msiexec.exe")
+            .args(["/i", &installer.to_string_lossy(), "/promptrestart"])
+            .spawn()
+            .map_err(|err| format!("无法启动 MSI 安装包: {err}"))?,
+        _ => return Err("更新包不包含可运行的 Windows 安装程序".to_string()),
+    };
+    Ok(())
+}
+
+fn extract_installer(path: &Path) -> Result<PathBuf, String> {
+    let file = File::open(path).map_err(|err| format!("无法打开更新包: {err}"))?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|err| format!("更新包不是有效 ZIP: {err}"))?;
+    let output_dir = std::env::temp_dir().join(format!("LAN Mesh-update-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&output_dir).map_err(|err| format!("无法创建安装目录: {err}"))?;
+    for index in 0..archive.len() {
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|err| format!("无法读取更新包: {err}"))?;
+        let Some(name) = entry.enclosed_name() else {
+            continue;
+        };
+        let is_installer = matches!(
+            name.extension().and_then(OsStr::to_str),
+            Some("exe") | Some("msi")
+        );
+        if !is_installer || name.components().count() != 1 {
+            continue;
+        }
+        let output = output_dir.join(
+            name.file_name()
+                .unwrap_or_else(|| OsStr::new("update-installer")),
+        );
+        let mut target = File::create(&output).map_err(|err| format!("无法创建安装程序: {err}"))?;
+        io::copy(&mut entry, &mut target).map_err(|err| format!("无法解压安装程序: {err}"))?;
+        return Ok(output);
+    }
+    Err("更新包不包含可运行的 Windows 安装程序".to_string())
 }
 
 #[cfg(test)]

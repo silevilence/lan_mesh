@@ -1,6 +1,7 @@
 use crate::{
     DEFAULT_TTL,
     ids::{err_string, id, neighbor},
+    notifications::{NotificationTarget, notify_when_hidden},
     persistence::{GroupAvailability, GroupStore},
     state::{ReceivedFiles, ReceivedUpdatePackage, ReceivedUpdatePackages, SentFiles},
     views::{
@@ -224,6 +225,12 @@ async fn emit_message_side_events(
             event.from = Some(id(header.source_device_id.0));
             event.target_device_id = target_device_id(header);
             if event.status == "done" {
+                notify_when_hidden(
+                    app,
+                    "LAN Mesh 文件已接收",
+                    &payload.file_name,
+                    NotificationTarget::new(id(group_id.0), target_device_id(header)),
+                );
                 if let Some(path) = event.path.as_ref().map(PathBuf::from) {
                     let package = {
                         let mut packages = received_update_packages.lock().await;
@@ -272,6 +279,14 @@ async fn emit_message_side_events(
                     sha256: payload.sha256.clone(),
                     source_device_id: id(payload.source_device_id.0),
                 },
+            );
+        }
+        Message::Text { header, payload } => {
+            notify_when_hidden(
+                app,
+                "LAN Mesh 新消息",
+                &payload.content,
+                NotificationTarget::new(id(group_id.0), target_device_id(header)),
             );
         }
         _ => {}

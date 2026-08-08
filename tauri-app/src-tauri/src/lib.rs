@@ -3,8 +3,10 @@ mod events;
 mod groups;
 mod ids;
 mod network;
+mod notifications;
 mod persistence;
 mod state;
+mod transfers;
 mod tray;
 mod updates;
 mod views;
@@ -17,7 +19,6 @@ pub fn run() {
         .manage(updates::PendingUpdate::default())
         .manage(updates::UpdateSettings::default())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
             commands::create_group,
             commands::discover_relays,
@@ -46,6 +47,7 @@ pub fn run() {
             tray::set_close_to_tray,
             tray::open_main_window,
             tray::is_main_window_visible,
+            notifications::set_notifications_enabled,
             updates::check_update,
             updates::install_update,
             updates::set_retain_installer,
@@ -62,6 +64,7 @@ pub fn run() {
             app.manage(state::AppState::new(persistence::GroupStore::load(
                 groups_path,
             )));
+            notifications::setup(app);
             tray::setup(app)?;
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(groups::restore_saved_groups(handle));
