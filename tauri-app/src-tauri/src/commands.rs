@@ -15,17 +15,22 @@ use crate::{
     views::{
         ConnectionStatus, MemberView, NeighborView, NetworkInterfaceView, ProbeRelayResponse,
         RelayAnnouncementView, ResumeFileResponse, SavedGroupView, SendFileResponse,
-        SessionResponse, TransferProgressEvent, relay_view, route_view, saved_group_view,
-        session_response,
+        SessionResponse, SharedUpdatePackageResponse, TransferProgressEvent, relay_view,
+        route_view, saved_group_view, session_response,
     },
 };
 use lan_mesh_core::{
-    DeviceId, DeviceRole, FileChunkReader, FileId, FileResumeRequestPayload, GroupId,
-    MessageTarget, Session, file_resume_request_message,
+    DeviceId, DeviceRole, FileChunkReader, FileId, FileResumeRequestPayload, GroupId, Message,
+    MessageHeader, MessageId, MessageTarget, Session, UpdatePackagePayload,
+    file_resume_request_message, now_timestamp_ms,
 };
 use std::{
+    ffi::OsStr,
+    fs::File,
+    io,
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
+    process::Command,
     time::Duration,
 };
 use tauri::{AppHandle, Emitter, State};
@@ -320,7 +325,6 @@ pub(crate) async fn send_file(
     sender_nickname: Option<String>,
 ) -> Result<SendFileResponse, String> {
     let client = current_session(&state).await?;
-    let file_id = FileId::new();
     let target = match target_device_id
         .as_deref()
         .filter(|value| !value.is_empty())
@@ -330,7 +334,28 @@ pub(crate) async fn send_file(
         },
         None => MessageTarget::Broadcast,
     };
-    let sender_nickname = clean_nickname(sender_nickname);
+    send_file_from_client(
+        &app,
+        &state.sent_files,
+        &client,
+        path,
+        target,
+        clean_nickname(sender_nickname),
+        None,
+    )
+    .await
+}
+
+async fn send_file_from_client(
+    app: &AppHandle,
+    sent_files: &crate::state::SentFiles,
+    client: &ClientSession,
+    path: String,
+    target: MessageTarget,
+    sender_nickname: Option<String>,
+    update_version: Option<&str>,
+) -> Result<SendFileResponse, String> {
+    let file_id = FileId::new();
     let mut reader = FileChunkReader::open(
         &path,
         file_id,
@@ -349,7 +374,34 @@ pub(crate) async fn send_file(
         .and_then(|name| name.to_str())
         .map(|name| name.to_string());
     let mut done_chunks = 0;
-    state.sent_files.lock().await.insert(
+    if let Some(version) = update_version {
+        client
+            .session
+            .route_message(Message::UpdatePackage {
+                header: MessageHeader {
+                    message_id: MessageId::new(),
+                    group_id: client.group_id,
+                    source_device_id: client.session.device_id(),
+                    target: target.clone(),
+                    ttl: DEFAULT_TTL,
+                    hop_count: 0,
+                    timestamp_ms: now_timestamp_ms(),
+                },
+                payload: UpdatePackagePayload {
+                    file_id,
+                    version: version.to_string(),
+                    file_name: file_name
+                        .clone()
+                        .unwrap_or_else(|| "update-package.zip".to_string()),
+                    total_size,
+                    sha256: reader.sha256().to_string(),
+                    source_device_id: client.session.device_id(),
+                },
+            })
+            .await
+            .map_err(err_string)?;
+    }
+    sent_files.lock().await.insert(
         file_id,
         SentFile {
             path,
@@ -612,6 +664,132 @@ pub(crate) async fn save_temp_file(file_name: String, bytes: Vec<u8>) -> Result<
 #[tauri::command]
 pub(crate) fn app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
+}
+
+#[tauri::command]
+pub(crate) async fn share_retained_update_package(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    group_ids: Vec<String>,
+) -> Result<Vec<SharedUpdatePackageResponse>, String> {
+    if group_ids.is_empty() {
+        return Err("请选择至少一个群组".to_string());
+    }
+    let package = crate::updates::retained_update_package(&app)
+        .await?
+        .ok_or_else(|| "请先检查更新获取安装包".to_string())?;
+    let mut clients = Vec::with_capacity(group_ids.len());
+    {
+        let active_clients = state.clients.lock().await;
+        for group_id in group_ids {
+            let group_id = parse_group_id(&group_id)?;
+            let client = active_clients
+                .get(&group_id)
+                .cloned()
+                .ok_or_else(|| "所选群组当前不可连接".to_string())?;
+            clients.push(client);
+        }
+    }
+
+    let mut shared = Vec::with_capacity(clients.len());
+    for client in clients {
+        let transfer = send_file_from_client(
+            &app,
+            &state.sent_files,
+            &client,
+            package.path.to_string_lossy().into_owned(),
+            MessageTarget::Broadcast,
+            None,
+            Some(&package.version),
+        )
+        .await?;
+        shared.push(SharedUpdatePackageResponse {
+            group_id: id(client.group_id.0),
+            file_id: transfer.file_id,
+        });
+    }
+    Ok(shared)
+}
+
+#[tauri::command]
+pub(crate) async fn install_received_update_package(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    file_id: String,
+) -> Result<(), String> {
+    let file_id = parse_file_id(&file_id)?;
+    let package = state
+        .received_update_packages
+        .lock()
+        .await
+        .get(&file_id)
+        .cloned()
+        .ok_or_else(|| "更新包元数据不存在".to_string())?;
+    let path = package
+        .path
+        .ok_or_else(|| "更新包尚未完成或未通过校验".to_string())?;
+    if !crate::updates::is_newer_version(&package.metadata.version) {
+        return Err(format!(
+            "更新包版本 {} 不高于当前版本 {}",
+            package.metadata.version,
+            env!("CARGO_PKG_VERSION")
+        ));
+    }
+    tokio::task::spawn_blocking(move || run_received_installer(&path))
+        .await
+        .map_err(err_string)??;
+    app.exit(0);
+    Ok(())
+}
+
+fn run_received_installer(path: &Path) -> Result<(), String> {
+    let installer = if path.extension() == Some(OsStr::new("zip")) {
+        extract_installer(path)?
+    } else {
+        path.to_path_buf()
+    };
+    match installer.extension().and_then(OsStr::to_str) {
+        Some("exe") => Command::new(&installer)
+            .spawn()
+            .map_err(|err| format!("无法启动更新安装包: {err}"))?,
+        Some("msi") => Command::new("msiexec.exe")
+            .args(["/i", &installer.to_string_lossy(), "/promptrestart"])
+            .spawn()
+            .map_err(|err| format!("无法启动 MSI 安装包: {err}"))?,
+        _ => return Err("更新包不包含可运行的 Windows 安装程序".to_string()),
+    };
+    Ok(())
+}
+
+fn extract_installer(path: &Path) -> Result<PathBuf, String> {
+    let file = File::open(path).map_err(|err| format!("无法打开更新包: {err}"))?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|err| format!("更新包不是有效 ZIP: {err}"))?;
+    let output_dir = std::env::temp_dir().join(format!("LAN Mesh-update-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&output_dir).map_err(|err| format!("无法创建安装目录: {err}"))?;
+    for index in 0..archive.len() {
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|err| format!("无法读取更新包: {err}"))?;
+        let Some(name) = entry.enclosed_name() else {
+            continue;
+        };
+        let is_installer = matches!(
+            name.extension().and_then(OsStr::to_str),
+            Some("exe") | Some("msi")
+        );
+        if !is_installer || name.components().count() != 1 {
+            continue;
+        }
+        let output = output_dir.join(
+            name.file_name()
+                .unwrap_or_else(|| OsStr::new("update-installer")),
+        );
+        let mut target = File::create(&output).map_err(|err| format!("无法创建安装程序: {err}"))?;
+        io::copy(&mut entry, &mut target).map_err(|err| format!("无法解压安装程序: {err}"))?;
+        return Ok(output);
+    }
+    Err("更新包不包含可运行的 Windows 安装程序".to_string())
 }
 
 #[tauri::command]

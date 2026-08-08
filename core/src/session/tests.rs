@@ -134,6 +134,29 @@ fn file_chunk_data_uses_base64_in_json() {
 }
 
 #[test]
+fn update_package_metadata_uses_internal_type_tag() {
+    let payload = UpdatePackagePayload {
+        file_id: FileId::new(),
+        version: "0.4.0".to_string(),
+        file_name: "LAN-Mesh_0.4.0_x64-setup.exe".to_string(),
+        total_size: 8_388_608,
+        sha256: "a".repeat(64),
+        source_device_id: DeviceId::new(),
+    };
+    let message = Message::UpdatePackage {
+        header: header(),
+        payload: payload.clone(),
+    };
+
+    let json = message_to_json(&message).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(value["type"], json!("update_package"));
+    assert_eq!(value["payload"]["version"], json!("0.4.0"));
+    assert_eq!(message_from_json(&json).unwrap(), message);
+}
+
+#[test]
 fn file_chunk_encoding_helpers_round_trip() {
     let data = [0, 1, 2, 3, 255];
 

@@ -1,6 +1,7 @@
 const tauri = window.__TAURI__;
 const invoke = tauri?.core?.invoke ?? tauri?.invoke;
 const listen = tauri?.event?.listen;
+const notification = tauri?.notification;
 
 document.querySelectorAll("form,input").forEach((node) => {
   node.autocomplete = "off";
@@ -36,9 +37,17 @@ const nicknameOf = (payload) => payload?.sender_nickname ?? payload?.senderNickn
 
 function loadSettings() {
   try {
-    return { sendKey: "ctrl_enter", nickname: "", ...JSON.parse(localStorage.getItem("lanMeshSettings") || "{}") };
+    return {
+      sendKey: "ctrl_enter",
+      nickname: "",
+      closeToTray: true,
+      notificationsEnabled: true,
+      retainInstaller: true,
+      trayNoticeAcknowledged: false,
+      ...JSON.parse(localStorage.getItem("lanMeshSettings") || "{}"),
+    };
   } catch {
-    return { sendKey: "ctrl_enter", nickname: "" };
+    return { sendKey: "ctrl_enter", nickname: "", closeToTray: true, notificationsEnabled: true, retainInstaller: true, trayNoticeAcknowledged: false };
   }
 }
 
@@ -46,8 +55,23 @@ function saveSettings() {
   localStorage.setItem("lanMeshSettings", JSON.stringify(state.settings));
   $("nickname").value = state.settings.nickname;
   $("send-key").value = state.settings.sendKey;
+  $("close-to-tray").checked = state.settings.closeToTray;
+  $("notifications-enabled").checked = state.settings.notificationsEnabled;
+  $("retain-installer").checked = state.settings.retainInstaller;
+  void syncDesktopSettings();
   renderSendHint();
   renderAll();
+}
+
+async function syncDesktopSettings() {
+  try {
+    await Promise.all([
+      call("set_close_to_tray", { enabled: state.settings.closeToTray }),
+      call("set_retain_installer", { enabled: state.settings.retainInstaller }),
+    ]);
+  } catch (err) {
+    log("sync desktop settings failed", text(err));
+  }
 }
 
 function cleanNickname(value) {
@@ -363,7 +387,7 @@ function renderMessages() {
     node.className = `message ${item.mine ? "mine" : ""}`;
     const content = document.createElement("div");
     const meta = document.createElement("div");
-    content.textContent = `${item.kind === "file" ? "📎 " : ""}${item.content}`;
+    content.textContent = `${item.kind === "file" ? "📎 " : item.kind === "update" ? "⬆️ " : ""}${item.content}`;
     meta.className = "muted";
     meta.textContent = `${item.mine ? `我(${displayName(item.from)})` : displayName(item.from)} · ${new Date(item.at).toLocaleTimeString()} · ${item.status}`;
     node.append(content, meta);
@@ -375,6 +399,14 @@ function renderMessages() {
       button.addEventListener("click", () => saveReceivedFile(item));
       node.append(button);
     }
+    if (item.kind === "update" && item.ready && !item.mine) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "secondary mini";
+      button.textContent = "安装更新";
+      button.addEventListener("click", () => installReceivedUpdate(item));
+      node.append(button);
+    }
     messages.append(node);
   }
   messages.scrollTop = messages.scrollHeight;
@@ -382,7 +414,7 @@ function renderMessages() {
 
 function addIncoming(message) {
   if (!message || !state.session) return;
-  if (message.type !== "text") return;
+  if (message.type !== "text" && message.type !== "update_package") return;
   const source = sourceOf(message);
   const target = targetOf(message);
   const payload = payloadOf(message);
@@ -391,8 +423,11 @@ function addIncoming(message) {
     from: source,
     mine: source === state.session.device_id,
     status: "已送达",
-    content: message.type === "text" ? payload.content : `文件分片 ${payload.file_id || ""}`,
-    kind: message.type === "file_chunk" ? "file" : "text",
+    content: message.type === "text" ? payload.content : `更新包 v${payload.version} · ${payload.file_name}`,
+    kind: message.type === "update_package" ? "update" : "text",
+    file_id: payload.file_id,
+    version: payload.version,
+    ready: false,
     at: headerOf(message).timestamp_ms || Date.now(),
   };
 
@@ -403,6 +438,28 @@ function addIncoming(message) {
     return;
   }
   pushMessage(state.groupMessages, item);
+}
+
+async function installReceivedUpdate(item) {
+  if (!confirm(`确认安装更新包 v${item.version}？程序将退出并启动本地安装程序。`)) return;
+  try {
+    await call("install_received_update_package", { fileId: item.file_id });
+  } catch (err) {
+    setStatus(`无法安装更新包：${err}`);
+  }
+}
+
+function markUpdatePackageReady(payload) {
+  const messagesByConversation = [state.groupMessages, ...state.directMessages.values()];
+  for (const list of messagesByConversation) {
+    const item = list.find((message) => message.kind === "update" && message.file_id === payload.file_id);
+    if (item) {
+      item.ready = true;
+      item.status = "已校验，可安装";
+      renderMessages();
+      return;
+    }
+  }
 }
 
 async function refreshMembers() {
@@ -806,6 +863,67 @@ async function checkForUpdate({ silent = false } = {}) {
   }
 }
 
+async function openShareUpdateDialog() {
+  try {
+    const update = await call("get_retained_update_package");
+    if (!update) {
+      setStatus("请先检查更新获取安装包");
+      return;
+    }
+    $("share-update-summary").textContent = `将分享更新包 v${update.version} · ${update.file_name} · ${formatBytes(update.total_size)}`;
+    const groups = $("share-update-groups");
+    groups.innerHTML = "";
+    for (const group of state.savedGroups) {
+      const label = document.createElement("label");
+      label.className = "check-row item";
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.name = "share-update-group";
+      input.value = group.group_id;
+      input.disabled = group.status !== "connected";
+      const name = document.createElement("span");
+      name.textContent = `${group.group_name} · ${group.status === "connected" ? "可发送" : "当前不可连接"}`;
+      label.append(input, name);
+      groups.append(label);
+    }
+    if (!groups.children.length) groups.append(emptyItem("没有可分享的群组。"));
+    showDialog("share-update-dialog");
+  } catch (err) {
+    setStatus(`无法读取保留安装包：${err}`);
+  }
+}
+
+async function shareRetainedUpdatePackage(event) {
+  event.preventDefault();
+  const groupIds = [...document.querySelectorAll('input[name="share-update-group"]:checked')].map((input) => input.value);
+  try {
+    const shared = await call("share_retained_update_package", { groupIds });
+    closeDialog("share-update-dialog");
+    setStatus(`已向 ${shared.length} 个群组发送更新包`);
+  } catch (err) {
+    setStatus(`分享更新包失败：${err}`);
+  }
+}
+
+async function notifyWhenHidden({ title, body, groupId, deviceId = null }) {
+  if (!state.settings.notificationsEnabled || !notification?.sendNotification) return;
+  try {
+    const visible = await call("is_main_window_visible");
+    if (visible) return;
+    notification.sendNotification({ title, body, extra: { groupId, deviceId: deviceId || "" } });
+  } catch (err) {
+    log("notification failed", text(err));
+  }
+}
+
+async function openNotificationTarget(data = {}) {
+  await call("open_main_window");
+  const group = state.savedGroups.find((item) => item.group_id === data.groupId);
+  if (group && group.group_id !== state.session?.group_id) await activateSavedGroup(group);
+  if (data.deviceId) openDirect(data.deviceId);
+  else openGroup();
+}
+
 function renderTransfers() {
   transfers.innerHTML = "";
   for (const item of state.transfers.values()) {
@@ -858,9 +976,12 @@ $("open-join").addEventListener("click", () => openJoinDialog());
 $("close-create").addEventListener("click", () => closeDialog("create-dialog"));
 $("close-join").addEventListener("click", () => closeDialog("join-dialog"));
 $("close-share").addEventListener("click", () => closeDialog("share-dialog"));
+$("close-share-update").addEventListener("click", () => closeDialog("share-update-dialog"));
 $("leave-button").addEventListener("click", closeCurrentSession);
 $("share-button").addEventListener("click", openShareDialog);
 $("check-update").addEventListener("click", () => checkForUpdate());
+$("share-update-package").addEventListener("click", () => openShareUpdateDialog());
+$("share-update-form").addEventListener("submit", shareRetainedUpdatePackage);
 $("parse-share-code").addEventListener("click", parseShareIntoJoinForm);
 $("copy-share-code").addEventListener("click", () => copyText($("share-code-output").value));
 $("copy-share-text").addEventListener("click", () => copyText(shareText(sharePayload())));
@@ -875,6 +996,9 @@ $("open-settings-view").addEventListener("click", () => {
 $("save-settings").addEventListener("click", () => {
   state.settings.nickname = cleanNickname($("nickname").value);
   state.settings.sendKey = $("send-key").value;
+  state.settings.closeToTray = $("close-to-tray").checked;
+  state.settings.notificationsEnabled = $("notifications-enabled").checked;
+  state.settings.retainInstaller = $("retain-installer").checked;
   saveSettings();
   void announceNickname();
   setStatus("配置已保存");
@@ -1054,12 +1178,41 @@ if (listen) {
     "mesh://transfer-progress",
     "mesh://groups-changed",
     "mesh://update-progress",
+    "mesh://update-package-ready",
+    "mesh://tray-hidden",
   ]) {
     listen(name, ({ payload }) => {
       log(name, payload);
       if (name === "mesh://groups-changed") {
         loadSavedGroups();
         return;
+      }
+      if (name === "mesh://tray-hidden") {
+        if (!state.settings.trayNoticeAcknowledged) {
+          state.settings.trayNoticeAcknowledged = true;
+          saveSettings();
+          alert("LAN Mesh 会继续在托盘中运行。请通过托盘图标的“打开主界面”或“退出程序”管理应用。");
+        }
+        return;
+      }
+      if (name === "mesh://message-received" && payload?.message?.type === "text") {
+        const message = payload.message;
+        if (sourceOf(message) !== state.session?.device_id) {
+          void notifyWhenHidden({
+            title: "LAN Mesh 新消息",
+            body: payloadOf(message).content || "收到一条新消息",
+            groupId: payload.group_id,
+            deviceId: sourceOf(message),
+          });
+        }
+      }
+      if (name === "mesh://update-package-ready") {
+        void notifyWhenHidden({
+          title: "LAN Mesh 更新包已接收",
+          body: `更新包 v${payload.version} 已校验完成`,
+          groupId: payload.group_id,
+          deviceId: payload.source_device_id,
+        });
       }
       if (payload?.group_id && payload.group_id !== state.session?.group_id) return;
       if (name === "mesh://message-received") addIncoming(payload.message);
@@ -1069,6 +1222,7 @@ if (listen) {
       }
       if (name === "mesh://member-changed" || name.includes("neighbor")) refreshMembers();
       if (name === "mesh://transfer-progress") rememberTransfer(payload);
+      if (name === "mesh://update-package-ready") markUpdatePackageReady(payload);
       if (name === "mesh://update-progress") {
         const total = payload.contentLength ? `/${formatBytes(payload.contentLength)}` : "";
         setStatus(payload.finished ? "更新已下载，正在安装..." : `更新下载中：${formatBytes(payload.downloaded)}${total}`);
@@ -1077,9 +1231,19 @@ if (listen) {
   }
 }
 
+if (notification?.onAction) {
+  notification.onAction((event) => {
+    void openNotificationTarget(event?.extra || event?.data || {});
+  });
+}
+
 $("nickname").value = state.settings.nickname;
 $("send-key").value = state.settings.sendKey;
+$("close-to-tray").checked = state.settings.closeToTray;
+$("notifications-enabled").checked = state.settings.notificationsEnabled;
+$("retain-installer").checked = state.settings.retainInstaller;
 renderSendHint();
+void syncDesktopSettings();
 
 call("app_version")
   .then((version) => {

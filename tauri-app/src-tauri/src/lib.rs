@@ -5,6 +5,7 @@ mod ids;
 mod network;
 mod persistence;
 mod state;
+mod tray;
 mod updates;
 mod views;
 
@@ -14,7 +15,9 @@ const DISCOVERY_PORT: u16 = 37020;
 pub fn run() {
     tauri::Builder::default()
         .manage(updates::PendingUpdate::default())
+        .manage(updates::UpdateSettings::default())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
             commands::create_group,
             commands::discover_relays,
@@ -38,8 +41,15 @@ pub fn run() {
             commands::save_temp_file,
             commands::save_file_as,
             commands::app_version,
+            commands::share_retained_update_package,
+            commands::install_received_update_package,
+            tray::set_close_to_tray,
+            tray::open_main_window,
+            tray::is_main_window_visible,
             updates::check_update,
             updates::install_update,
+            updates::set_retain_installer,
+            updates::get_retained_update_package,
         ])
         .setup(|app| {
             use tauri::Manager;
@@ -52,6 +62,7 @@ pub fn run() {
             app.manage(state::AppState::new(persistence::GroupStore::load(
                 groups_path,
             )));
+            tray::setup(app)?;
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(groups::restore_saved_groups(handle));
             Ok(())

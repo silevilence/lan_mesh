@@ -121,6 +121,26 @@ pub(crate) struct TransferProgressEvent {
     pub(crate) target_device_id: Option<String>,
 }
 
+#[derive(Clone, Serialize)]
+pub(crate) struct UpdatePackageEvent {
+    pub(crate) group_id: String,
+    pub(crate) file_id: String,
+    pub(crate) version: String,
+    pub(crate) file_name: String,
+    pub(crate) total_size: u64,
+    pub(crate) sha256: String,
+    pub(crate) source_device_id: String,
+}
+
+#[derive(Clone, Serialize)]
+pub(crate) struct UpdatePackageReadyEvent {
+    pub(crate) group_id: String,
+    pub(crate) file_id: String,
+    pub(crate) version: String,
+    pub(crate) file_name: String,
+    pub(crate) source_device_id: String,
+}
+
 pub(crate) fn saved_group_view(group: PersistedGroup) -> SavedGroupView {
     SavedGroupView {
         device_id: id(group.device_id.0),
@@ -149,6 +169,12 @@ pub(crate) struct SendFileResponse {
 pub(crate) struct ResumeFileResponse {
     pub(crate) file_id: String,
     pub(crate) resent_chunks: usize,
+}
+
+#[derive(Serialize)]
+pub(crate) struct SharedUpdatePackageResponse {
+    pub(crate) group_id: String,
+    pub(crate) file_id: String,
 }
 
 pub(crate) fn session_response(

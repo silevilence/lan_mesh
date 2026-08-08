@@ -1188,6 +1188,7 @@ fn message_header(message: &Message) -> &MessageHeader {
         Message::Text { header, .. }
         | Message::FileChunk { header, .. }
         | Message::FileResumeRequest { header, .. }
+        | Message::UpdatePackage { header, .. }
         | Message::Heartbeat { header, .. }
         | Message::MemberChanged { header, .. }
         | Message::RouteDiscoveryRequest { header, .. }
@@ -1200,6 +1201,7 @@ fn message_header_mut(message: &mut Message) -> &mut MessageHeader {
         Message::Text { header, .. }
         | Message::FileChunk { header, .. }
         | Message::FileResumeRequest { header, .. }
+        | Message::UpdatePackage { header, .. }
         | Message::Heartbeat { header, .. }
         | Message::MemberChanged { header, .. }
         | Message::RouteDiscoveryRequest { header, .. }

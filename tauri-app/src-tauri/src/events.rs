@@ -2,8 +2,11 @@ use crate::{
     DEFAULT_TTL,
     ids::{err_string, id, neighbor},
     persistence::{GroupAvailability, GroupStore},
-    state::{ReceivedFiles, SentFiles},
-    views::{MemberEvent, MessageEvent, NeighborEvent, TransferProgressEvent},
+    state::{ReceivedFiles, ReceivedUpdatePackage, ReceivedUpdatePackages, SentFiles},
+    views::{
+        MemberEvent, MessageEvent, NeighborEvent, TransferProgressEvent, UpdatePackageEvent,
+        UpdatePackageReadyEvent,
+    },
 };
 use lan_mesh_core::{
     DeviceRole, FileAssemblyStatus, FileChunkPayload, FileResumeRequestPayload, GroupId, Message,
@@ -18,6 +21,7 @@ pub(crate) async fn forward_events(
     group_id: GroupId,
     sent_files: SentFiles,
     received_files: ReceivedFiles,
+    received_update_packages: ReceivedUpdatePackages,
     groups: GroupStore,
 ) {
     let mut events = session.subscribe();
@@ -28,6 +32,7 @@ pub(crate) async fn forward_events(
             group_id,
             &sent_files,
             &received_files,
+            &received_update_packages,
             &groups,
             event,
         )
@@ -41,6 +46,7 @@ async fn emit_event(
     group_id: GroupId,
     sent_files: &SentFiles,
     received_files: &ReceivedFiles,
+    received_update_packages: &ReceivedUpdatePackages,
     groups: &GroupStore,
     event: SessionEvent,
 ) {
@@ -77,7 +83,14 @@ async fn emit_event(
             neighbor_id,
             message,
         } => {
-            emit_message_side_events(app, group_id, received_files, &message).await;
+            emit_message_side_events(
+                app,
+                group_id,
+                received_files,
+                received_update_packages,
+                &message,
+            )
+            .await;
             if let Message::FileResumeRequest { payload, .. } = &message {
                 let _ = resend_saved_chunks(app, session, group_id, sent_files, payload).await;
             }
@@ -181,6 +194,7 @@ async fn emit_message_side_events(
     app: &AppHandle,
     group_id: GroupId,
     received_files: &ReceivedFiles,
+    received_update_packages: &ReceivedUpdatePackages,
     message: &Message,
 ) {
     match message {
@@ -195,14 +209,86 @@ async fn emit_message_side_events(
             );
         }
         Message::FileChunk { header, payload } => {
-            let mut event = receive_file_chunk(received_files, payload).await;
+            let mut event = if update_package_matches(received_update_packages, payload).await {
+                receive_file_chunk(received_files, payload).await
+            } else {
+                incoming_progress(
+                    payload,
+                    payload.chunk_index + 1,
+                    "failed",
+                    None,
+                    Some("更新包元数据与文件分片不一致"),
+                )
+            };
             event.group_id = id(group_id.0);
             event.from = Some(id(header.source_device_id.0));
             event.target_device_id = target_device_id(header);
+            if event.status == "done" {
+                if let Some(path) = event.path.as_ref().map(PathBuf::from) {
+                    let package = {
+                        let mut packages = received_update_packages.lock().await;
+                        if let Some(package) = packages.get_mut(&payload.file_id) {
+                            package.path = Some(path.clone());
+                            Some(package.metadata.clone())
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(package) = package {
+                        let _ = app.emit(
+                            "mesh://update-package-ready",
+                            UpdatePackageReadyEvent {
+                                group_id: id(group_id.0),
+                                file_id: id(payload.file_id.0),
+                                version: package.version,
+                                file_name: package.file_name,
+                                source_device_id: id(package.source_device_id.0),
+                            },
+                        );
+                    }
+                }
+            }
             let _ = app.emit("mesh://transfer-progress", event);
+        }
+        Message::UpdatePackage { header, payload } => {
+            if payload.source_device_id != header.source_device_id {
+                return;
+            }
+            received_update_packages.lock().await.insert(
+                payload.file_id,
+                ReceivedUpdatePackage {
+                    metadata: payload.clone(),
+                    path: None,
+                },
+            );
+            let _ = app.emit(
+                "mesh://update-package",
+                UpdatePackageEvent {
+                    group_id: id(group_id.0),
+                    file_id: id(payload.file_id.0),
+                    version: payload.version.clone(),
+                    file_name: payload.file_name.clone(),
+                    total_size: payload.total_size,
+                    sha256: payload.sha256.clone(),
+                    source_device_id: id(payload.source_device_id.0),
+                },
+            );
         }
         _ => {}
     }
+}
+
+async fn update_package_matches(
+    received_update_packages: &ReceivedUpdatePackages,
+    payload: &FileChunkPayload,
+) -> bool {
+    let packages = received_update_packages.lock().await;
+    let Some(package) = packages.get(&payload.file_id) else {
+        return true;
+    };
+    package.metadata.file_name == payload.file_name
+        && package.metadata.total_size == payload.total_size
+        && package.metadata.sha256 == payload.sha256
 }
 
 async fn receive_file_chunk(

@@ -77,6 +77,19 @@ pub struct FileResumeRequestPayload {
     pub missing_chunks: Vec<u32>,
 }
 
+/// Metadata that marks a file transfer as an application update package.
+/// The package bytes still travel in ordinary `FileChunk` messages so they
+/// retain the shared resume and integrity-checking behavior.
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+pub struct UpdatePackagePayload {
+    pub file_id: FileId,
+    pub version: String,
+    pub file_name: String,
+    pub total_size: u64,
+    pub sha256: String,
+    pub source_device_id: DeviceId,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub struct HeartbeatPayload {
     pub device_id: DeviceId,
@@ -126,6 +139,10 @@ pub enum Message {
     FileResumeRequest {
         header: MessageHeader,
         payload: FileResumeRequestPayload,
+    },
+    UpdatePackage {
+        header: MessageHeader,
+        payload: UpdatePackagePayload,
     },
     Heartbeat {
         header: MessageHeader,

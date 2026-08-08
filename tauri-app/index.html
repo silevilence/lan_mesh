@@ -389,6 +389,12 @@
         max-width: 720px;
       }
 
+      .check-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
       details {
         padding: 0 20px 14px;
       }
@@ -578,9 +584,22 @@
               <option value="enter">Enter 发送，Ctrl+Enter 换行</option>
             </select>
           </label>
+          <label class="check-row">
+            <input id="close-to-tray" type="checkbox" checked />
+            关闭窗口时隐藏到托盘（取消勾选则退出程序）
+          </label>
+          <label class="check-row">
+            <input id="notifications-enabled" type="checkbox" checked />
+            隐藏或最小化时显示新消息通知
+          </label>
+          <label class="check-row">
+            <input id="retain-installer" type="checkbox" checked />
+            保留安装包（仅保留最新一份）
+          </label>
           <div class="row">
             <button id="save-settings" type="button">保存配置</button>
             <button id="check-update" type="button" class="secondary">检查更新</button>
+            <button id="share-update-package" type="button" class="secondary">分享更新包</button>
           </div>
         </div>
       </section>
@@ -691,6 +710,18 @@
           <button id="copy-share-text" type="button" class="secondary">复制明文信息</button>
         </div>
       </div>
+    </dialog>
+
+    <dialog id="share-update-dialog">
+      <form id="share-update-form" class="modal" autocomplete="off">
+        <div class="modal-head">
+          <h1>分享更新包</h1>
+          <button id="close-share-update" type="button" class="ghost">关闭</button>
+        </div>
+        <p id="share-update-summary" class="hint"></p>
+        <div id="share-update-groups" class="list"></div>
+        <button id="confirm-share-update" type="submit">发送到所选群组</button>
+      </form>
     </dialog>
 
     <script type="module" src="/src/main.js"></script>

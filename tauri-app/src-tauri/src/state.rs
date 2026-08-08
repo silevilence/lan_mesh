@@ -1,12 +1,19 @@
 use crate::events::forward_events;
 use crate::persistence::GroupStore;
-use lan_mesh_core::{FileAssembler, FileId, GroupId, MessageTarget, Session};
-use std::{collections::HashMap, sync::Arc};
+use lan_mesh_core::{FileAssembler, FileId, GroupId, MessageTarget, Session, UpdatePackagePayload};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 use tauri::AppHandle;
 use tokio::{sync::Mutex, task::JoinHandle};
 
 pub(crate) type SentFiles = Arc<Mutex<HashMap<FileId, SentFile>>>;
 pub(crate) type ReceivedFiles = Arc<Mutex<HashMap<FileId, FileAssembler>>>;
+pub(crate) type ReceivedUpdatePackages = Arc<Mutex<HashMap<FileId, ReceivedUpdatePackage>>>;
+
+#[derive(Clone)]
+pub(crate) struct ReceivedUpdatePackage {
+    pub(crate) metadata: UpdatePackagePayload,
+    pub(crate) path: Option<PathBuf>,
+}
 
 pub(crate) struct AppState {
     pub(crate) clients: Mutex<HashMap<GroupId, ClientSession>>,
@@ -14,6 +21,7 @@ pub(crate) struct AppState {
     pub(crate) event_tasks: Mutex<HashMap<GroupId, JoinHandle<()>>>,
     pub(crate) sent_files: SentFiles,
     pub(crate) received_files: ReceivedFiles,
+    pub(crate) received_update_packages: ReceivedUpdatePackages,
     pub(crate) groups: GroupStore,
 }
 
@@ -25,6 +33,7 @@ impl AppState {
             event_tasks: Mutex::new(HashMap::new()),
             sent_files: Default::default(),
             received_files: Default::default(),
+            received_update_packages: Default::default(),
             groups,
         }
     }
@@ -63,6 +72,7 @@ pub(crate) async fn install_session(
         client.group_id,
         state.sent_files.clone(),
         state.received_files.clone(),
+        state.received_update_packages.clone(),
         state.groups.clone(),
     ));
     state.event_tasks.lock().await.insert(group_id, task);
