@@ -389,9 +389,52 @@
       }
 
       .check-row {
-        display: flex;
-        align-items: center;
+        display: grid;
+        grid-template-columns: 20px minmax(0, 1fr);
+        align-items: start;
+        gap: 12px;
+        padding: 12px 14px;
+        border: 1px solid #dbe4ef;
+        border-radius: 14px;
+        background: #f8fbff;
+        cursor: pointer;
+      }
+
+      .check-row:hover {
+        border-color: #b8ccec;
+        background: #f2f7ff;
+      }
+
+      .check-row input {
+        width: 18px;
+        height: 18px;
+        margin: 2px 0 0;
+      }
+
+      .toggle-copy {
+        display: grid;
+        gap: 3px;
+      }
+
+      .toggle-copy strong {
+        color: #18202a;
+        font-size: 14px;
+        font-weight: 600;
+      }
+
+      .settings-options {
+        display: grid;
         gap: 8px;
+      }
+
+      .settings-actions {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .settings-actions #save-settings {
+        grid-column: 1 / -1;
       }
 
       details {
@@ -473,8 +516,13 @@
         }
 
         .file-row,
-        .row {
+        .row,
+        .settings-actions {
           grid-template-columns: 1fr;
+        }
+
+        .settings-actions #save-settings {
+          grid-column: auto;
         }
       }
     </style>
@@ -583,19 +631,30 @@
               <option value="enter">Enter 发送，Ctrl+Enter 换行</option>
             </select>
           </label>
-          <label class="check-row">
-            <input id="close-to-tray" type="checkbox" checked />
-            关闭窗口时隐藏到托盘（取消勾选则退出程序）
-          </label>
-          <label class="check-row">
-            <input id="notifications-enabled" type="checkbox" checked />
-            隐藏或最小化时显示新消息通知
-          </label>
-          <label class="check-row">
-            <input id="retain-installer" type="checkbox" checked />
-            保留安装包（仅保留最新一份）
-          </label>
-          <div class="row">
+          <div class="settings-options">
+            <label class="check-row">
+              <input id="close-to-tray" type="checkbox" checked />
+              <span class="toggle-copy">
+                <strong>关闭窗口时隐藏到托盘</strong>
+                <span class="hint">取消勾选后，点击关闭按钮将直接退出程序。</span>
+              </span>
+            </label>
+            <label class="check-row">
+              <input id="notifications-enabled" type="checkbox" checked />
+              <span class="toggle-copy">
+                <strong>隐藏或最小化时显示新消息通知</strong>
+                <span class="hint">窗口可见时不会弹出系统通知。</span>
+              </span>
+            </label>
+            <label class="check-row">
+              <input id="retain-installer" type="checkbox" checked />
+              <span class="toggle-copy">
+                <strong>保留安装包</strong>
+                <span class="hint">仅保留最新一份，便于向局域网群组分享更新。</span>
+              </span>
+            </label>
+          </div>
+          <div class="settings-actions">
             <button id="save-settings" type="button">保存配置</button>
             <button id="check-update" type="button" class="secondary">检查更新</button>
             <button id="share-update-package" type="button" class="secondary">分享更新包</button>
