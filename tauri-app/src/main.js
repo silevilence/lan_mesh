@@ -1,3 +1,13 @@
+import {
+  cleanNickname,
+  conversationPresentation,
+  displayName as formatDisplayName,
+  rememberNickname as cacheNickname,
+  routeLabel as formatRouteLabel,
+  syncMemberNicknames,
+  visibleMembers,
+} from "./ui-model.mjs";
+
 // This no-bundler entry point remains intentionally centralized while the UI
 // stays small; split it into native ES modules when another independent view
 // or a second notification workflow is added.
@@ -79,10 +89,6 @@ async function syncDesktopSettings() {
   }
 }
 
-function cleanNickname(value) {
-  return text(value).trim().slice(0, 24);
-}
-
 function parseHostPort(value) {
   const raw = text(value).trim();
   const index = raw.lastIndexOf(":");
@@ -147,14 +153,15 @@ function sessionLabel() {
 }
 
 function rememberNickname(deviceId, nickname) {
-  const clean = cleanNickname(nickname);
-  if (deviceId && clean) state.nicknames.set(deviceId, clean);
+  return cacheNickname(state.nicknames, deviceId, nickname);
 }
 
 function displayName(deviceId) {
-  if (!deviceId) return "未知设备";
-  const nickname = deviceId === state.session?.device_id ? state.settings.nickname : state.nicknames.get(deviceId);
-  return nickname ? `${nickname}(${short(deviceId)})` : short(deviceId);
+  return formatDisplayName(deviceId, {
+    sessionDeviceId: state.session?.device_id,
+    settingsNickname: state.settings.nickname,
+    nicknames: state.nicknames,
+  });
 }
 
 function senderNickname() {
@@ -312,7 +319,7 @@ function renderMembers() {
     return;
   }
 
-  for (const member of state.members) {
+  for (const member of visibleMembers(state.members)) {
     const isSelf = member.device_id === state.session.device_id;
     const node = document.createElement(isSelf ? "div" : "button");
     if (!isSelf) node.type = "button";
@@ -339,10 +346,7 @@ function emptyItem(content) {
 }
 
 function routeLabel(member) {
-  const route = state.routes.find((item) => item.target_device_id === member.device_id);
-  if (!member.online) return "离线";
-  if (!route) return "可达状态未知";
-  return route.path.length <= 2 ? "直连可达" : `多跳可达(${route.path.length - 1}跳)`;
+  return formatRouteLabel(member, state.routes);
 }
 
 function openGroup() {
@@ -372,9 +376,10 @@ function renderConversation() {
   if (!hasSelection) return;
 
   const isGroup = state.selected.type === "group";
-  $("peer-title").textContent = isGroup ? groupNameOf(state.session) : `单聊 ${displayName(state.selected.id)}`;
+  const presentation = conversationPresentation(state.session, state.selected, displayName);
+  $("peer-title").textContent = presentation.title;
   $("peer-subtitle").textContent = isGroup ? sessionLabel() : state.selected.id;
-  $("leave-button").textContent = state.session.role === "relay" ? "解散群组" : "退出群组";
+  $("leave-button").textContent = presentation.leaveLabel;
   $("share-button").classList.toggle("hidden", !isGroup);
   renderMessages();
 }
@@ -424,7 +429,7 @@ function addIncoming(message) {
   const source = sourceOf(message);
   const target = targetOf(message);
   const payload = payloadOf(message);
-  rememberNickname(source, nicknameOf(payload));
+  const learnedNickname = rememberNickname(source, nicknameOf(payload));
   const item = {
     from: source,
     mine: source === state.session.device_id,
@@ -441,9 +446,11 @@ function addIncoming(message) {
     const peer = source === state.session.device_id ? target.device_id ?? target.deviceId : source;
     if (!state.directMessages.has(peer)) state.directMessages.set(peer, []);
     pushMessage(state.directMessages.get(peer), item);
+    if (learnedNickname) renderAll();
     return;
   }
   pushMessage(state.groupMessages, item);
+  if (learnedNickname) renderAll();
 }
 
 async function installReceivedUpdate(item) {
@@ -505,13 +512,7 @@ async function refreshMembers() {
     call("get_members"),
     call("get_connection_status"),
   ]);
-  for (const member of memberList) {
-    if (Object.hasOwn(member, "nickname")) {
-      const nickname = cleanNickname(member.nickname);
-      if (nickname) state.nicknames.set(member.device_id, nickname);
-      else state.nicknames.delete(member.device_id);
-    }
-  }
+  syncMemberNicknames(state.nicknames, memberList);
   state.members = memberList.sort((a, b) => text(a.device_id).localeCompare(text(b.device_id)));
   state.routes = statusSnapshot.routes;
   renderAll();
@@ -760,6 +761,15 @@ async function closeCurrentSession() {
   loadSavedGroups();
 }
 
+function leaveConversation() {
+  const action = conversationPresentation(state.session, state.selected, displayName).leaveAction;
+  if (action === "open-group") {
+    openGroup();
+    return;
+  }
+  void closeCurrentSession();
+}
+
 function formatBytes(value) {
   if (value < 1024) return `${value} B`;
   if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
@@ -1004,7 +1014,7 @@ $("close-create").addEventListener("click", () => closeDialog("create-dialog"));
 $("close-join").addEventListener("click", () => closeDialog("join-dialog"));
 $("close-share").addEventListener("click", () => closeDialog("share-dialog"));
 $("close-share-update").addEventListener("click", () => closeDialog("share-update-dialog"));
-$("leave-button").addEventListener("click", closeCurrentSession);
+$("leave-button").addEventListener("click", leaveConversation);
 $("share-button").addEventListener("click", openShareDialog);
 $("check-update").addEventListener("click", () => checkForUpdate());
 $("share-update-package").addEventListener("click", () => openShareUpdateDialog());
@@ -1226,6 +1236,11 @@ if (listen) {
         return;
       }
       if (name === "mesh://message-received") addIncoming(payload.message);
+      if (name === "mesh://member-changed" && payload.nickname_updated) {
+        const nickname = cleanNickname(payload.nickname);
+        if (nickname) state.nicknames.set(payload.device_id, nickname);
+        else state.nicknames.delete(payload.device_id);
+      }
       if (name === "mesh://neighbor-offline") {
         markInterruptedTransfers("连接中断");
         if (state.session?.role === "leaf") setStatus("连接暂时中断，正在后台重连…");

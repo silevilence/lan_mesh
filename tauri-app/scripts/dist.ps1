@@ -26,6 +26,26 @@ try {
   }
 
   cargo tauri build --bundles nsis
+  if ($LASTEXITCODE -ne 0) {
+    throw "Tauri NSIS build failed with exit code $LASTEXITCODE."
+  }
+
+  $workspaceRoot = Split-Path -Parent $AppDir
+  $releaseCandidates = @(
+    (Join-Path $workspaceRoot "target\release\lan-mesh-tauri.exe"),
+    (Join-Path $AppDir "src-tauri\target\release\lan-mesh-tauri.exe")
+  )
+  $releaseExecutable = $releaseCandidates |
+    Where-Object { Test-Path -LiteralPath $_ } |
+    ForEach-Object { Get-Item -LiteralPath $_ } |
+    Sort-Object LastWriteTime -Descending |
+    Select-Object -First 1
+  if (-not $releaseExecutable) {
+    throw "Release executable was not produced."
+  }
+
+  & (Join-Path $PSScriptRoot "verify-windows-icon.ps1") `
+    -ExecutablePath $releaseExecutable.FullName
 } finally {
   foreach ($key in $old.Keys) {
     if ($null -eq $old[$key]) {

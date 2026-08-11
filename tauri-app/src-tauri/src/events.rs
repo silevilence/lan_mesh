@@ -205,6 +205,8 @@ async fn emit_message_side_events(
                     group_id: id(group_id.0),
                     device_id: id(payload.device_id.0),
                     change: payload.change,
+                    nickname: payload.nickname.clone(),
+                    nickname_updated: payload.nickname_updated,
                 },
             );
         }

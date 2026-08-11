@@ -101,6 +101,8 @@ pub(crate) struct MemberEvent {
     pub(crate) group_id: String,
     pub(crate) device_id: String,
     pub(crate) change: MemberChange,
+    pub(crate) nickname: Option<String>,
+    pub(crate) nickname_updated: bool,
 }
 
 #[derive(Clone, Serialize)]

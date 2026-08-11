@@ -137,8 +137,8 @@ pub(crate) async fn join_group(
     relay_addr: String,
     local_ip: Option<String>,
 ) -> Result<SessionResponse, String> {
-    let device_id = parse_or_new_device_id(device_id)?;
     let group_id = parse_group_id(&group_id)?;
+    let device_id = resolve_join_device_id(&state.groups, group_id, device_id).await?;
     let relay_addr = parse_socket_addr(&relay_addr)?;
     let local_ip = parse_optional_ip(local_ip)?;
     let group_name = group_name
@@ -175,6 +175,22 @@ pub(crate) async fn join_group(
         None,
         Some(neighbor_id),
     ))
+}
+
+async fn resolve_join_device_id(
+    groups: &crate::persistence::GroupStore,
+    group_id: GroupId,
+    requested: Option<String>,
+) -> Result<DeviceId, String> {
+    if requested.as_deref().is_some_and(|value| !value.is_empty()) {
+        return parse_or_new_device_id(requested);
+    }
+    if let Some(saved) = groups.find(group_id).await
+        && saved.role == DeviceRole::Leaf
+    {
+        return Ok(saved.device_id);
+    }
+    Ok(DeviceId::new())
 }
 
 #[tauri::command]
@@ -668,6 +684,42 @@ mod tests {
         assert_eq!(
             state.groups.find(group.group_id).await.unwrap().status,
             GroupAvailability::Unreachable
+        );
+
+        let _ = tokio::fs::remove_dir_all(directory).await;
+    }
+
+    #[tokio::test]
+    async fn rejoining_a_saved_group_reuses_its_device_id() {
+        let directory =
+            std::env::temp_dir().join(format!("lan-mesh-command-{}", uuid::Uuid::new_v4()));
+        let store = GroupStore::load(directory.join("groups.json"));
+        let group = PersistedGroup {
+            device_id: DeviceId::new(),
+            group_id: GroupId::new(),
+            group_name: "虚拟云".to_string(),
+            role: DeviceRole::Leaf,
+            bind_addr: None,
+            relay_addr: Some("192.168.0.101:59114".to_string()),
+            local_ip: None,
+            status: GroupAvailability::Unreachable,
+            last_error: None,
+        };
+        store.upsert(group.clone()).await.unwrap();
+
+        assert_eq!(
+            resolve_join_device_id(&store, group.group_id, None)
+                .await
+                .unwrap(),
+            group.device_id
+        );
+
+        let requested = DeviceId::new();
+        assert_eq!(
+            resolve_join_device_id(&store, group.group_id, Some(requested.0.to_string()),)
+                .await
+                .unwrap(),
+            requested
         );
 
         let _ = tokio::fs::remove_dir_all(directory).await;

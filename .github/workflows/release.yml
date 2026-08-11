@@ -78,7 +78,7 @@ jobs:
             ~/.cargo/bin/cargo-tauri.exe
             target
             tauri-app/src-tauri/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock', 'tauri-app/src-tauri/build.rs', 'tauri-app/src-tauri/tauri.conf.json', 'tauri-app/src-tauri/icons/icon.ico', 'tauri-app/src-tauri/icons/icon.png') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
 
