@@ -61,13 +61,27 @@ pub fn run() {
                 .app_local_data_dir()
                 .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?
                 .join("groups.json");
-            app.manage(state::AppState::new(persistence::GroupStore::load(
-                groups_path,
-            )));
+            let groups = groups::Groups::load(groups_path);
+            let group_events = groups.subscribe();
+            let state = state::AppState::new(groups.clone());
+            let sent_files = state.sent_files.clone();
+            let received_files = state.received_files.clone();
+            let received_update_packages = state.received_update_packages.clone();
+            app.manage(state);
             notifications::setup(app);
             tray::setup(app)?;
             let handle = app.handle().clone();
-            tauri::async_runtime::spawn(groups::restore_saved_groups(handle));
+            tauri::async_runtime::spawn(events::forward_events(
+                handle,
+                group_events,
+                sent_files,
+                received_files,
+                received_update_packages,
+            ));
+            tauri::async_runtime::spawn(async move {
+                groups.restore_all().await;
+                groups.start_recovery(groups::RECONNECT_INTERVAL).await;
+            });
             Ok(())
         })
         .run(tauri::generate_context!())

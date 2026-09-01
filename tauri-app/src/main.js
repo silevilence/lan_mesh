@@ -508,10 +508,12 @@ function restoreDeferredUpdates(groupId) {
 
 async function refreshMembers() {
   if (!state.session) return;
+  const groupId = state.session.group_id;
   const [memberList, statusSnapshot] = await Promise.all([
-    call("get_members"),
-    call("get_connection_status"),
+    call("get_members", { groupId }),
+    call("get_connection_status", { groupId }),
   ]);
+  if (state.session?.group_id !== groupId) return;
   syncMemberNicknames(state.nicknames, memberList);
   state.members = memberList.sort((a, b) => text(a.device_id).localeCompare(text(b.device_id)));
   state.routes = statusSnapshot.routes;
@@ -521,7 +523,7 @@ async function refreshMembers() {
 async function announceNickname() {
   if (!state.session) return;
   try {
-    await call("announce_nickname", { nickname: senderNickname() });
+    await call("announce_nickname", { groupId: state.session.group_id, nickname: senderNickname() });
     await refreshMembers();
   } catch (err) {
     log("announce_nickname failed", text(err));
@@ -755,7 +757,7 @@ async function closeCurrentSession() {
   const action = state.session.role === "relay" ? "解散群组" : "退出群组";
   const groupId = state.session.group_id;
   if (!confirm(`${action}后会断开当前会话，继续？`)) return;
-  await call("close_session");
+  await call("close_session", { groupId });
   forgetRelayGroup(groupId);
   clearSession();
   loadSavedGroups();
@@ -874,10 +876,12 @@ async function retryTransfer(item) {
   item.status = "running";
   item.error = "";
   renderTransfers();
+  const groupId = item.group_id || state.session?.group_id;
+  if (!groupId) throw new Error("没有可用于续传的群组");
   if (item.direction === "outgoing") {
-    await call("resume_file_transfer", { fileId: item.file_id, missingChunks: missing });
+    await call("resume_file_transfer", { groupId, fileId: item.file_id, missingChunks: missing });
   } else {
-    await call("request_file_resume", { fileId: item.file_id, missingChunks: missing, targetDeviceId: null });
+    await call("request_file_resume", { groupId, fileId: item.file_id, missingChunks: missing, targetDeviceId: null });
   }
 }
 
@@ -1089,8 +1093,8 @@ $("send-text").addEventListener("submit", async (event) => {
   try {
     item.messageId =
       state.selected.type === "group"
-        ? await call("send_group_text", { content, senderNickname: senderNickname() })
-        : await call("send_direct_text", { targetDeviceId: state.selected.id, content, senderNickname: senderNickname() });
+        ? await call("send_group_text", { groupId: state.session.group_id, content, senderNickname: senderNickname() })
+        : await call("send_direct_text", { groupId: state.session.group_id, targetDeviceId: state.selected.id, content, senderNickname: senderNickname() });
     item.status = "已送达";
   } catch (err) {
     item.status = `失败：${err}`;
@@ -1124,6 +1128,7 @@ async function sendOneFile(path) {
   pushMessage(activeMessages(), item);
   try {
     const sent = await call("send_file", {
+      groupId: state.session.group_id,
       path,
       targetDeviceId: state.selected.type === "direct" ? state.selected.id : null,
       senderNickname: senderNickname(),
@@ -1222,6 +1227,7 @@ if (listen) {
       log(name, payload);
       if (name === "mesh://groups-changed") {
         loadSavedGroups();
+        if (state.session) void refreshMembers();
         return;
       }
       if (name === "mesh://notification-opened") {

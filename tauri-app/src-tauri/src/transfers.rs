@@ -1,7 +1,8 @@
 use crate::{
     DEFAULT_TTL,
+    groups::GroupRuntime,
     ids::{err_string, id},
-    state::{ClientSession, SentFile, SentFiles},
+    state::{SentFile, SentFiles},
     views::{SendFileResponse, TransferProgressEvent},
 };
 use lan_mesh_core::{FileChunkReader, FileId, MessageTarget, update_package_message};
@@ -11,7 +12,7 @@ use tauri::{AppHandle, Emitter};
 pub(crate) async fn send_file_from_client(
     app: &AppHandle,
     sent_files: &SentFiles,
-    client: &ClientSession,
+    runtime: &GroupRuntime,
     path: String,
     target: MessageTarget,
     sender_nickname: Option<String>,
@@ -21,8 +22,8 @@ pub(crate) async fn send_file_from_client(
     let mut reader = FileChunkReader::open(
         &path,
         file_id,
-        client.group_id,
-        client.session.device_id(),
+        runtime.group_id(),
+        runtime.session().device_id(),
         target.clone(),
         DEFAULT_TTL,
     )
@@ -37,8 +38,8 @@ pub(crate) async fn send_file_from_client(
         .map(ToString::to_string);
     let mut done_chunks = 0;
     if let Some(version) = update_version {
-        client
-            .session
+        runtime
+            .session()
             .route_message(update_package_message(
                 file_id,
                 version.to_string(),
@@ -47,8 +48,8 @@ pub(crate) async fn send_file_from_client(
                     .unwrap_or_else(|| "update-package.zip".to_string()),
                 total_size,
                 reader.sha256().to_string(),
-                client.group_id,
-                client.session.device_id(),
+                runtime.group_id(),
+                runtime.session().device_id(),
                 target.clone(),
                 DEFAULT_TTL,
             ))
@@ -65,8 +66,8 @@ pub(crate) async fn send_file_from_client(
     );
 
     while let Some(message) = reader.next_message().await.map_err(err_string)? {
-        client
-            .session
+        runtime
+            .session()
             .route_message(message)
             .await
             .map_err(err_string)?;
@@ -75,7 +76,7 @@ pub(crate) async fn send_file_from_client(
         let _ = app.emit(
             "mesh://transfer-progress",
             TransferProgressEvent {
-                group_id: id(client.group_id.0),
+                group_id: id(runtime.group_id().0),
                 file_id: id(file_id.0),
                 file_name: file_name.clone(),
                 sender_nickname: sender_nickname.clone(),

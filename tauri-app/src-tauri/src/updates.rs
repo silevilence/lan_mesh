@@ -152,10 +152,10 @@ pub(crate) async fn install_update(
         .lock()
         .map_err(|_| "update settings are unavailable".to_string())?
         .retain_installer;
-    if retain_installer {
-        if let Err(error) = store_retained_update_package(&app, &update, &bytes).await {
-            eprintln!("failed to retain update package: {error}");
-        }
+    if retain_installer
+        && let Err(error) = store_retained_update_package(&app, &update, &bytes).await
+    {
+        eprintln!("failed to retain update package: {error}");
     }
     update.install(&bytes).map_err(|err| err.to_string())
 }
@@ -223,12 +223,12 @@ async fn store_retained_update_package(
         .await
         .map_err(|err| format!("failed to hash retained update package: {err}"))?;
     let metadata_path = directory.join("retained-update.json");
-    if let Ok(previous) = tokio::fs::read(&metadata_path).await {
-        if let Ok(previous) = serde_json::from_slice::<RetainedUpdateRecord>(&previous) {
-            let old_path = directory.join(previous.storage_name);
-            if old_path != path {
-                let _ = tokio::fs::remove_file(old_path).await;
-            }
+    if let Ok(previous) = tokio::fs::read(&metadata_path).await
+        && let Ok(previous) = serde_json::from_slice::<RetainedUpdateRecord>(&previous)
+    {
+        let old_path = directory.join(previous.storage_name);
+        if old_path != path {
+            let _ = tokio::fs::remove_file(old_path).await;
         }
     }
     let record = RetainedUpdateRecord {
@@ -260,7 +260,7 @@ fn update_file_name(update: &Update) -> String {
     update
         .download_url
         .path_segments()
-        .and_then(|segments| segments.last())
+        .and_then(|mut segments| segments.next_back())
         .filter(|name| !name.is_empty())
         .map(safe_file_name)
         .unwrap_or_else(|| format!("LAN-Mesh-{}-update.zip", update.version))
@@ -292,15 +292,14 @@ pub(crate) async fn share_retained_update_package(
     let mut shared = Vec::with_capacity(group_ids.len());
     let mut failed_groups = Vec::new();
     for group_id in group_ids {
-        let client = state.clients.lock().await.get(&group_id).cloned();
-        let Some(client) = client else {
+        let Ok(runtime) = state.groups.runtime(group_id).await else {
             failed_groups.push(id(group_id.0));
             continue;
         };
         let transfer = send_file_from_client(
             app,
             &state.sent_files,
-            &client,
+            &runtime,
             package.path.to_string_lossy().into_owned(),
             MessageTarget::Broadcast,
             None,
@@ -309,10 +308,10 @@ pub(crate) async fn share_retained_update_package(
         .await;
         match transfer {
             Ok(transfer) => shared.push(SharedUpdatePackageResponse {
-                group_id: id(client.group_id.0),
+                group_id: id(runtime.group_id().0),
                 file_id: transfer.file_id,
             }),
-            Err(_) => failed_groups.push(id(client.group_id.0)),
+            Err(_) => failed_groups.push(id(runtime.group_id().0)),
         }
     }
     if shared.is_empty() {

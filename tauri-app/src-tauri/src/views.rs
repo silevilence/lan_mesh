@@ -1,5 +1,5 @@
+use crate::groups::{GroupAvailability, GroupSnapshot};
 use crate::ids::{duration_ms, id, neighbor, role_name};
-use crate::persistence::{GroupAvailability, PersistedGroup};
 use lan_mesh_core::{
     DeviceRole, MemberChange, Message, NeighborId, RelayAnnouncement, RouteSnapshot,
 };
@@ -132,7 +132,7 @@ pub(crate) struct UpdatePackageReadyEvent {
     pub(crate) source_device_id: String,
 }
 
-pub(crate) fn saved_group_view(group: PersistedGroup) -> SavedGroupView {
+pub(crate) fn saved_group_view(group: GroupSnapshot) -> SavedGroupView {
     SavedGroupView {
         device_id: id(group.device_id.0),
         group_id: id(group.group_id.0),
@@ -141,7 +141,7 @@ pub(crate) fn saved_group_view(group: PersistedGroup) -> SavedGroupView {
         bind_addr: group.bind_addr,
         relay_addr: group.relay_addr,
         local_ip: group.local_ip,
-        status: match group.status {
+        status: match group.availability {
             GroupAvailability::Connected => "connected",
             GroupAvailability::Unreachable => "unreachable",
         },

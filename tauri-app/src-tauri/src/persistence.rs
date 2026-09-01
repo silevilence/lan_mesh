@@ -19,17 +19,12 @@ pub(crate) struct PersistedGroup {
     pub(crate) last_error: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum GroupAvailability {
     Connected,
+    #[default]
     Unreachable,
-}
-
-impl Default for GroupAvailability {
-    fn default() -> Self {
-        Self::Unreachable
-    }
 }
 
 #[derive(Default, Deserialize, Serialize)]
@@ -79,15 +74,18 @@ impl GroupStore {
 
     pub(crate) async fn upsert(&self, group: PersistedGroup) -> Result<(), String> {
         let mut groups = self.inner.groups.lock().await;
-        if let Some(existing) = groups
+        let mut updated = groups.clone();
+        if let Some(existing) = updated
             .iter_mut()
             .find(|item| item.group_id == group.group_id)
         {
             *existing = group;
         } else {
-            groups.push(group);
+            updated.push(group);
         }
-        self.write(&groups).await
+        self.write(&updated).await?;
+        *groups = updated;
+        Ok(())
     }
 
     pub(crate) async fn set_status(
@@ -97,19 +95,25 @@ impl GroupStore {
         last_error: Option<String>,
     ) -> Result<(), String> {
         let mut groups = self.inner.groups.lock().await;
-        let group = groups
+        let mut updated = groups.clone();
+        let group = updated
             .iter_mut()
             .find(|group| group.group_id == group_id)
             .ok_or_else(|| "saved group not found".to_string())?;
         group.status = status;
         group.last_error = last_error;
-        self.write(&groups).await
+        self.write(&updated).await?;
+        *groups = updated;
+        Ok(())
     }
 
     pub(crate) async fn remove(&self, group_id: GroupId) -> Result<(), String> {
         let mut groups = self.inner.groups.lock().await;
-        groups.retain(|group| group.group_id != group_id);
-        self.write(&groups).await
+        let mut updated = groups.clone();
+        updated.retain(|group| group.group_id != group_id);
+        self.write(&updated).await?;
+        *groups = updated;
+        Ok(())
     }
 
     async fn write(&self, groups: &[PersistedGroup]) -> Result<(), String> {

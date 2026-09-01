@@ -1,61 +1,65 @@
 use crate::{
     DEFAULT_TTL,
+    groups::{GroupEvent, GroupRuntime},
     ids::{err_string, id, neighbor},
     notifications::{NotificationTarget, notify_when_hidden},
-    persistence::{GroupAvailability, GroupStore},
     state::{ReceivedFiles, ReceivedUpdatePackage, ReceivedUpdatePackages, SentFiles},
     views::{
         MemberEvent, MessageEvent, NeighborEvent, TransferProgressEvent, UpdatePackageReadyEvent,
     },
 };
 use lan_mesh_core::{
-    DeviceRole, FileAssemblyStatus, FileChunkPayload, FileResumeRequestPayload, GroupId, Message,
+    FileAssemblyStatus, FileChunkPayload, FileResumeRequestPayload, GroupId, Message,
     MessageHeader, MessageTarget, Session, SessionEvent, resend_file_chunks,
 };
 use std::path::PathBuf;
 use tauri::{AppHandle, Emitter};
+use tokio::sync::broadcast;
 
 pub(crate) async fn forward_events(
     app: AppHandle,
-    session: Session,
-    group_id: GroupId,
+    mut events: broadcast::Receiver<GroupEvent>,
     sent_files: SentFiles,
     received_files: ReceivedFiles,
     received_update_packages: ReceivedUpdatePackages,
-    groups: GroupStore,
 ) {
-    let mut events = session.subscribe();
-    while let Ok(event) = events.recv().await {
-        emit_event(
-            &app,
-            &session,
-            group_id,
-            &sent_files,
-            &received_files,
-            &received_update_packages,
-            &groups,
-            event,
-        )
-        .await;
+    loop {
+        match events.recv().await {
+            Ok(GroupEvent::Session { runtime, event }) => {
+                emit_event(
+                    &app,
+                    &runtime,
+                    &sent_files,
+                    &received_files,
+                    &received_update_packages,
+                    (*event).clone(),
+                )
+                .await;
+            }
+            Ok(GroupEvent::GroupsChanged | GroupEvent::ResyncRequired)
+            | Err(broadcast::error::RecvError::Lagged(_)) => {
+                let _ = app.emit("mesh://groups-changed", ());
+            }
+            Err(broadcast::error::RecvError::Closed) => return,
+        }
     }
 }
 
 async fn emit_event(
     app: &AppHandle,
-    session: &Session,
-    group_id: GroupId,
+    runtime: &GroupRuntime,
     sent_files: &SentFiles,
     received_files: &ReceivedFiles,
     received_update_packages: &ReceivedUpdatePackages,
-    groups: &GroupStore,
     event: SessionEvent,
 ) {
+    let session = runtime.session();
+    let group_id = runtime.group_id();
     match event {
         SessionEvent::NeighborOnline {
             neighbor_id,
             peer_addr,
         } => {
-            sync_leaf_availability(app, session, group_id, groups, true).await;
             let _ = app.emit(
                 "mesh://neighbor-online",
                 NeighborEvent {
@@ -69,7 +73,6 @@ async fn emit_event(
             neighbor_id,
             peer_addr,
         } => {
-            sync_leaf_availability(app, session, group_id, groups, false).await;
             let _ = app.emit(
                 "mesh://neighbor-offline",
                 NeighborEvent {
@@ -103,32 +106,6 @@ async fn emit_event(
                 },
             );
         }
-    }
-}
-
-async fn sync_leaf_availability(
-    app: &AppHandle,
-    session: &Session,
-    group_id: GroupId,
-    groups: &GroupStore,
-    connected: bool,
-) {
-    if session.role() != DeviceRole::Leaf {
-        return;
-    }
-    let result = groups
-        .set_status(
-            group_id,
-            if connected {
-                GroupAvailability::Connected
-            } else {
-                GroupAvailability::Unreachable
-            },
-            (!connected).then(|| "与 Relay 的连接已断开".to_string()),
-        )
-        .await;
-    if result.is_ok() {
-        let _ = app.emit("mesh://groups-changed", ());
     }
 }
 
@@ -302,16 +279,10 @@ async fn receive_file_chunk(
     let path = received_file_path(payload);
     let mut files = received_files.lock().await;
     if let std::collections::hash_map::Entry::Vacant(entry) = files.entry(payload.file_id) {
-        if let Some(parent) = path.parent() {
-            if let Err(err) = tokio::fs::create_dir_all(parent).await {
-                return incoming_progress(
-                    payload,
-                    payload.chunk_index + 1,
-                    "failed",
-                    None,
-                    Some(err),
-                );
-            }
+        if let Some(parent) = path.parent()
+            && let Err(err) = tokio::fs::create_dir_all(parent).await
+        {
+            return incoming_progress(payload, payload.chunk_index + 1, "failed", None, Some(err));
         }
         match lan_mesh_core::FileAssembler::create(
             &path,

@@ -132,14 +132,14 @@ Refs: ROADMAP OPDS 书源服务构建与分发
 - `src-tauri/src/` 模块职责(新增代码优先放入已有职责模块):
   - `lib.rs`:Tauri 应用入口,注册插件(`tauri-plugin-updater`)、状态与 command handler,声明 `DEFAULT_TTL`/`DISCOVERY_PORT` 常量。
   - `commands.rs`:全部 Tauri command,仅做参数校验与转调 `core` 接口。
-  - `events.rs`:`forward_events` 将 `SessionEvent` 转发为前端事件,并处理文件/更新包分片接收组装、断点续传重发。
+  - `events.rs`:`forward_events` 作为 Tauri adapter 将 `GroupEvent` 转发为前端事件,并处理文件/更新包分片接收组装、断点续传重发。
   - `updates.rs`:`check_update`/`install_update` 命令、保留安装包存储(`RetainedUpdatePackage`)、接收更新包的版本校验与本地安装执行;待安装更新暂存于 `PendingUpdate` 状态。
   - `transfers.rs`:`send_file_from_client` 统一文件发送路径,`send_file` 与 `share_retained_update_package` 共用。
-  - `groups.rs`:`restore_saved_groups` 启动时恢复已保存群组并后台自动重连。
-  - `persistence.rs`:`GroupStore` 群组持久化(app_local_data_dir 下 `groups.json`)。
+  - `groups.rs`:群组 lifecycle deep module,统一拥有创建/加入/恢复/重试/移除、按群组串行、runtime registry、事件任务、可用性与后台自动重连;对 caller 仅暴露快照和不可变 runtime handle。
+  - `persistence.rs`:`groups` module 的内部 JSON 持久化 implementation(app_local_data_dir 下 `groups.json`),其他 module 不直接访问。
   - `notifications.rs`:窗口隐藏时的新消息 Windows 桌面通知,点击通知打开主界面。
   - `tray.rs`:托盘图标与菜单、关闭/最小化驻留托盘、主窗口显示/隐藏。
-  - `state.rs`:`AppState`、`ClientSession`、`SentFiles`/`ReceivedFiles`/`ReceivedUpdatePackages` 等跨 command 共享状态。
+  - `state.rs`:`AppState` 持有 `Groups` handle 与 `SentFiles`/`ReceivedFiles`/`ReceivedUpdatePackages` 等跨 command 共享状态;不保存后端 active group。
   - `network.rs`:网卡枚举、广播发现目标计算、地址解析、多网卡并行发现的绑定地址计算。
   - `views.rs`:面向前端的序列化视图结构与转换函数。
   - `ids.rs`:ID/角色/错误等参数解析与格式化辅助。
@@ -175,6 +175,8 @@ Refs: ROADMAP OPDS 书源服务构建与分发
 - 会话与消息:`create_group`、`discover_relays`、`join_group`、`close_session`、`list_saved_groups`、`activate_saved_group`、`retry_saved_group`、`delete_saved_group`、`send_group_text`、`send_direct_text`、`announce_nickname`。
 - 文件传输:`send_file`、`resume_file_transfer`、`request_file_resume`、`pick_file`、`save_temp_file`、`save_file_as`。
 - 状态与网络:`get_members`、`get_connection_status`、`list_network_interfaces`、`probe_relay_addr`(用于分享码解析时从候选中继地址探测可用项并回填本机网卡)、`app_version`。
+
+需要已连接群组的 command(`close_session`、消息发送、文件发送/续传、成员与连接状态查询)必须显式接收 `group_id`;active group 仅属于前端选择状态,不得在 Rust 后端恢复隐式全局指针。
 - 托盘与通知(`tray.rs`/`notifications.rs`):`set_close_to_tray`、`open_main_window`、`is_main_window_visible`、`set_notifications_enabled`。
 - 自动更新与更新互助(`updates.rs`):`check_update`(检查并暂存待安装更新,返回版本号/发布时间/更新说明)、`install_update`(下载并安装已暂存的更新,由用户确认后重启)、`set_retain_installer`、`get_retained_update_package`、`share_retained_update_package`(向指定群组发送保留安装包)、`install_received_update_package`(校验并启动本地安装,退出应用)。
 
