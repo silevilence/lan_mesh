@@ -4,628 +4,97 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>LAN Mesh</title>
-    <style>
-      :root {
-        color: #18202a;
-        background: #eef3f8;
-        font-family:
-          "Segoe UI Variable", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
-      }
-
-      * {
-        box-sizing: border-box;
-      }
-
-      body {
-        margin: 0;
-        height: 100vh;
-        overflow: hidden;
-      }
-
-      button,
-      input,
-      select {
-        font: inherit;
-      }
-
-      button {
-        border: 0;
-        border-radius: 12px;
-        background: #1f5eff;
-        color: white;
-        cursor: pointer;
-        padding: 10px 14px;
-        box-shadow: 0 8px 18px rgb(31 94 255 / 18%);
-        transition:
-          transform 0.12s ease,
-          box-shadow 0.12s ease,
-          background 0.12s ease,
-          border-color 0.12s ease;
-      }
-
-      button:hover:not(:disabled) {
-        transform: translateY(-1px);
-        box-shadow: 0 12px 24px rgb(31 94 255 / 22%);
-      }
-
-      button:active:not(:disabled) {
-        transform: translateY(1px) scale(0.98);
-        box-shadow: 0 4px 10px rgb(31 94 255 / 14%);
-      }
-
-      button.secondary {
-        background: #e6edf7;
-        color: #18202a;
-        box-shadow: 0 8px 18px rgb(82 96 113 / 10%);
-      }
-
-      button.danger {
-        background: #ffe8e8;
-        color: #ba1a1a;
-      }
-
-      button.ghost {
-        background: transparent;
-        color: #526071;
-        box-shadow: none;
-      }
-
-      button.mini {
-        margin-top: 8px;
-        padding: 6px 10px;
-      }
-
-      input,
-      select,
-      textarea {
-        width: 100%;
-        border: 1px solid #d3deeb;
-        border-radius: 12px;
-        padding: 10px 12px;
-        background: white;
-      }
-
-      textarea {
-        min-height: 86px;
-        resize: vertical;
-      }
-
-      label {
-        display: grid;
-        gap: 6px;
-        color: #526071;
-        font-size: 13px;
-      }
-
-      .app {
-        height: 100vh;
-        display: grid;
-        grid-template-rows: auto minmax(0, 1fr);
-        gap: 18px;
-        padding: 18px;
-      }
-
-      .sidebar,
-      .chat {
-        min-height: 0;
-        border: 1px solid #dbe4ef;
-        border-radius: 24px;
-        background: rgb(255 255 255 / 86%);
-        box-shadow: 0 18px 50px rgb(32 48 70 / 10%);
-      }
-
-      .sidebar {
-        display: flex;
-        flex-direction: column;
-        padding: 18px;
-      }
-
-      .brand {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-      }
-
-      .mark {
-        width: 36px;
-        height: 36px;
-        object-fit: contain;
-      }
-
-      h1,
-      h2,
-      h3,
-      p {
-        margin: 0;
-      }
-
-      h1 {
-        font-size: 24px;
-      }
-
-      .version {
-        color: #6b7789;
-        font-size: 12px;
-      }
-
-      h2 {
-        font-size: 14px;
-        letter-spacing: 0.08em;
-        color: #6b7789;
-        text-transform: uppercase;
-      }
-
-      .status {
-        color: #526071;
-        font-size: 13px;
-        min-height: 18px;
-      }
-
-      .actions {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 10px;
-        margin: 18px 0;
-      }
-
-      .nav {
-        display: grid;
-        grid-template-columns: 120px 120px;
-        gap: 10px;
-      }
-
-      .nav button.active {
-        background: #18202a;
-        color: white;
-      }
-
-      .rail {
-        min-height: 0;
-        overflow: auto;
-        display: grid;
-        align-content: start;
-        gap: 18px;
-        padding-right: 2px;
-      }
-
-      .list {
-        display: grid;
-        gap: 8px;
-        margin-top: 10px;
-      }
-
-      .item {
-        border: 1px solid #dbe4ef;
-        border-radius: 16px;
-        background: #fbfdff;
-        padding: 12px;
-      }
-
-      .item.clickable {
-        text-align: left;
-        color: inherit;
-      }
-
-      .item.clickable:hover {
-        border-color: #1f5eff;
-      }
-
-      .item.disabled {
-        cursor: not-allowed;
-        opacity: 0.58;
-      }
-
-      .item.active {
-        border-color: #1f5eff;
-        background: #edf4ff;
-      }
-
-      .item-actions {
-        display: flex;
-        gap: 8px;
-        flex-wrap: wrap;
-      }
-
-      .item-head {
-        display: flex;
-        justify-content: space-between;
-        gap: 10px;
-        align-items: center;
-      }
-
-      .title {
-        font-weight: 700;
-      }
-
-      .muted {
-        color: #6b7789;
-        font-size: 12px;
-      }
-
-      .badge {
-        border-radius: 999px;
-        padding: 3px 8px;
-        background: #e8eef7;
-        color: #526071;
-        font-size: 12px;
-      }
-
-      .online {
-        background: #e4f8ee;
-        color: #12713d;
-      }
-
-      .chat {
-        display: flex;
-        flex-direction: column;
-        overflow: hidden;
-      }
-
-      #chat-view {
-        min-height: 0;
-        display: grid;
-        grid-template-columns: 360px minmax(0, 1fr);
-        gap: 18px;
-      }
-
-      #chat-view > .chat {
-        min-width: 0;
-      }
-
-      .topbar {
-        border: 1px solid #dbe4ef;
-        border-radius: 24px;
-        background: rgb(255 255 255 / 86%);
-        box-shadow: 0 18px 50px rgb(32 48 70 / 10%);
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        gap: 18px;
-        padding: 14px 18px;
-      }
-
-      .chat.empty {
-        display: grid;
-        place-items: center;
-        color: #6b7789;
-      }
-
-      .chat-header {
-        display: flex;
-        justify-content: space-between;
-        gap: 16px;
-        align-items: center;
-        padding: 18px 20px;
-        border-bottom: 1px solid #dbe4ef;
-      }
-
-      .chat-actions {
-        display: flex;
-        gap: 10px;
-        align-items: center;
-      }
-
-      .chat-title {
-        display: grid;
-        gap: 4px;
-      }
-
-      .messages {
-        min-height: 0;
-        flex: 1;
-        overflow: auto;
-        display: flex;
-        flex-direction: column;
-        gap: 10px;
-        padding: 18px 20px;
-        background:
-          radial-gradient(circle at 12% 0%, rgb(31 94 255 / 8%), transparent 28%),
-          #f7f9fc;
-      }
-
-      .messages.drag-over {
-        outline: 2px dashed #1f5eff;
-        outline-offset: -10px;
-        background:
-          radial-gradient(circle at 50% 10%, rgb(31 94 255 / 14%), transparent 32%),
-          #eef5ff;
-      }
-
-      .message {
-        max-width: 70%;
-        padding: 10px 12px;
-        border-radius: 16px;
-        background: white;
-        border: 1px solid #dbe4ef;
-        overflow-wrap: anywhere;
-        white-space: pre-wrap;
-      }
-
-      .message.mine {
-        align-self: flex-end;
-        background: #1f5eff;
-        color: white;
-        border-color: #1f5eff;
-      }
-
-      .message.mine .muted {
-        color: rgb(255 255 255 / 72%);
-      }
-
-      .composer {
-        display: grid;
-        gap: 10px;
-        padding: 14px 20px 18px;
-        border-top: 1px solid #dbe4ef;
-        background: white;
-      }
-
-      .send-row {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) 112px;
-        gap: 10px;
-      }
-
-      .file-row {
-        display: grid;
-        grid-template-columns: 86px minmax(0, 1fr) 92px;
-        gap: 10px;
-      }
-
-      .settings {
-        min-height: 0;
-        border: 1px solid #dbe4ef;
-        border-radius: 24px;
-        background: rgb(255 255 255 / 90%);
-        box-shadow: 0 18px 50px rgb(32 48 70 / 10%);
-        padding: 22px;
-        overflow: auto;
-      }
-
-      .settings-grid {
-        display: grid;
-        gap: 16px;
-        max-width: 720px;
-      }
-
-      .check-row {
-        display: grid;
-        grid-template-columns: 20px minmax(0, 1fr);
-        align-items: start;
-        gap: 12px;
-        padding: 12px 14px;
-        border: 1px solid #dbe4ef;
-        border-radius: 14px;
-        background: #f8fbff;
-        cursor: pointer;
-      }
-
-      .check-row:hover {
-        border-color: #b8ccec;
-        background: #f2f7ff;
-      }
-
-      .check-row input {
-        width: 18px;
-        height: 18px;
-        margin: 2px 0 0;
-      }
-
-      .toggle-copy {
-        display: grid;
-        gap: 3px;
-      }
-
-      .toggle-copy strong {
-        color: #18202a;
-        font-size: 14px;
-        font-weight: 600;
-      }
-
-      .settings-options {
-        display: grid;
-        gap: 8px;
-      }
-
-      .settings-actions {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 10px;
-      }
-
-      .settings-actions #save-settings {
-        grid-column: 1 / -1;
-      }
-
-      details {
-        padding: 0 20px 14px;
-      }
-
-      pre {
-        max-height: 120px;
-        overflow: auto;
-        white-space: pre-wrap;
-      }
-
-      dialog {
-        width: min(560px, calc(100vw - 36px));
-        border: 1px solid #dbe4ef;
-        border-radius: 22px;
-        padding: 0;
-        box-shadow: 0 24px 80px rgb(20 31 50 / 30%);
-      }
-
-      dialog::backdrop {
-        background: rgb(14 23 36 / 45%);
-      }
-
-      .modal {
-        display: grid;
-        gap: 14px;
-        padding: 18px;
-      }
-
-      .modal-head {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-      }
-
-      .hint {
-        color: #6b7789;
-        font-size: 12px;
-        line-height: 1.5;
-      }
-
-      .share-code {
-        font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
-        word-break: break-all;
-      }
-
-      .row {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 10px;
-      }
-
-      .hidden {
-        display: none !important;
-      }
-
-      @media (max-width: 860px) {
-        body {
-          overflow: auto;
-          height: auto;
-        }
-
-        .app {
-          height: auto;
-        }
-
-        #chat-view {
-          grid-template-columns: 1fr;
-        }
-
-        .topbar {
-          align-items: stretch;
-          flex-direction: column;
-        }
-
-        .chat {
-          min-height: 70vh;
-        }
-
-        .file-row,
-        .row,
-        .settings-actions {
-          grid-template-columns: 1fr;
-        }
-
-        .settings-actions #save-settings {
-          grid-column: auto;
-        }
-      }
-    </style>
+    <link rel="icon" href="icon.png" />
+    <link rel="stylesheet" href="src/app.css" />
   </head>
   <body>
     <main class="app">
       <header class="topbar">
         <div class="brand">
-          <img class="mark" src="icon.png" alt="LAN Mesh 图标" />
+          <img class="mark" src="icon.png" alt="" />
           <div>
             <h1>LAN Mesh</h1>
-            <p class="status" id="status">未连接</p>
-            <p class="version" id="title-version">v-</p>
+            <p class="version" id="title-version"></p>
           </div>
         </div>
 
-        <div class="nav">
+        <p class="status" id="status" role="status">尚未打开群组</p>
+        <nav class="nav" aria-label="主导航">
           <button id="open-chat-view" type="button" class="active">聊天</button>
-          <button id="open-settings-view" type="button" class="secondary">配置</button>
-        </div>
+          <button id="open-settings-view" type="button" class="secondary">设置</button>
+          <button id="error-history" type="button" class="secondary">问题记录</button>
+        </nav>
       </header>
 
       <div id="chat-view">
         <aside class="sidebar">
+          <div class="sidebar-head"><h2>会话</h2><button id="back-chat" class="ghost narrow-only" type="button" hidden>返回聊天</button></div>
+          <nav class="rail-nav" aria-label="会话列表分类">
+            <button type="button" data-panel="groups" aria-pressed="true" aria-controls="groups-panel">群组</button>
+            <button type="button" data-panel="members" aria-pressed="false" aria-controls="members-panel">成员</button>
+            <button type="button" data-panel="files" aria-pressed="false" aria-controls="files-panel">传输</button>
+          </nav>
+          <section class="rail" id="groups-panel" aria-label="群组"><div id="session-list" class="list"></div></section>
+          <section class="rail" id="members-panel" aria-label="群成员" hidden><div id="member-list" class="list"></div></section>
+          <section class="rail" id="files-panel" aria-label="文件传输" hidden><div id="transfers" class="list"></div></section>
           <div class="actions">
-            <button id="open-create" type="button">新建群组</button>
+            <button id="open-create" type="button" class="secondary">新建群组</button>
             <button id="open-join" type="button" class="secondary">加入群组</button>
-          </div>
-
-          <div class="rail">
-            <section>
-              <h2>群组</h2>
-              <div id="session-list" class="list"></div>
-            </section>
-            <section>
-              <h2>成员</h2>
-              <div id="member-list" class="list"></div>
-            </section>
-            <section>
-              <h2>传输进度</h2>
-              <div id="transfers" class="list"></div>
-            </section>
           </div>
         </aside>
 
         <section id="empty-state" class="chat empty">
           <div>
-            <h2>先选择群组或单聊对象</h2>
-            <p class="muted">左侧只负责选择会话；进入后再发送消息和文件。</p>
+            <img class="welcome-icon" src="icon.png" alt="" />
+            <h2>打开群组，开始聊天</h2>
+            <p>第一次使用？创建一个群组邀请别人，<br />或加入同一局域网里的群组。</p>
+            <div class="welcome-actions"><button id="welcome-create" type="button">新建群组</button><button id="welcome-join" type="button" class="secondary">加入群组</button></div>
           </div>
         </section>
 
         <section id="chat-pane" class="chat hidden">
           <header class="chat-header">
+            <button type="button" class="secondary narrow-only" id="back-list">会话</button>
+            <div id="chat-avatar" aria-hidden="true" class="chat-avatar"></div>
             <div class="chat-title">
               <h1 id="peer-title">群聊</h1>
               <p id="peer-subtitle" class="muted"></p>
             </div>
             <div class="chat-actions">
-              <button id="share-button" type="button" class="secondary hidden">连接信息</button>
-              <button id="leave-button" type="button" class="danger">退出群组</button>
+              <button id="share-button" type="button" class="secondary hidden">邀请成员</button>
+              <button id="back-group" type="button" class="secondary" hidden>返回群聊</button>
+              <button id="chat-options" type="button" class="ghost">群组管理</button>
             </div>
           </header>
 
           <div id="messages" class="messages"></div>
 
           <form id="send-text" class="composer" autocomplete="off">
-            <div class="send-row">
-              <textarea id="message-input" placeholder="输入文本消息" autocomplete="off" spellcheck="false" required></textarea>
+            <textarea id="message-input" aria-label="消息内容" placeholder="写消息…" autocomplete="off" spellcheck="false" required></textarea>
+            <div class="composer-tools">
+              <button id="attach-file" type="button" class="secondary">添加文件</button>
+              <button id="latest-message" type="button" class="ghost" hidden>回到最新消息 ↓</button>
+              <span class="hint" id="send-hint"></span>
               <button type="submit">发送</button>
             </div>
-            <p class="hint" id="send-hint"></p>
           </form>
-
-          <form id="send-file" class="composer" autocomplete="off">
-            <div class="file-row">
-              <button id="pick-file" type="button" class="secondary">选文件</button>
-              <input id="file-path" placeholder="文件绝对路径（也可粘贴/拖拽多个文件到聊天区）" autocomplete="off" spellcheck="false" />
-              <button type="submit">发文件</button>
-            </div>
-          </form>
-
-          <details>
-            <summary>事件日志</summary>
-            <pre id="events"></pre>
-          </details>
         </section>
       </div>
 
       <section id="settings-view" class="settings hidden">
         <div class="settings-grid">
           <div>
-            <h1>配置</h1>
-            <p class="muted">当前版本：<span id="settings-version">v-</span></p>
+            <h1>设置</h1>
+            <p class="muted">当前版本：<span id="settings-version"></span></p>
           </div>
           <label>
             昵称
-            <span class="hint">会显示为“昵称(设备ID前8位)”。留空则只显示设备ID。</span>
+            <span class="hint">群成员会看到你的昵称和设备编号前 8 位。留空只显示编号。</span>
             <input id="nickname" maxlength="24" placeholder="例如：客厅电脑" autocomplete="off" spellcheck="false" />
           </label>
           <label>
             发送键
-            <span class="hint">Shift+Enter 永远换行；未选中的组合键也会换行。</span>
+            <span class="hint">两种设置都可以用 Shift+Enter 换行。</span>
             <select id="send-key">
               <option value="ctrl_enter">Ctrl+Enter 发送，Enter 换行</option>
               <option value="enter">Enter 发送，Ctrl+Enter 换行</option>
@@ -636,7 +105,7 @@
               <input id="close-to-tray" type="checkbox" checked />
               <span class="toggle-copy">
                 <strong>关闭窗口时隐藏到托盘</strong>
-                <span class="hint">取消勾选后，点击关闭按钮将直接退出程序。</span>
+                <span class="hint">打开后，关闭窗口仍可收消息。点击任务栏右侧的 LAN Mesh 图标可回到聊天。取消勾选后，关闭窗口会退出程序。</span>
               </span>
             </label>
             <label class="check-row">
@@ -650,130 +119,124 @@
               <input id="retain-installer" type="checkbox" checked />
               <span class="toggle-copy">
                 <strong>保留安装包</strong>
-                <span class="hint">仅保留最新一份，便于向局域网群组分享更新。</span>
+                <span class="hint">通过应用更新时保存最新安装包，之后可以发给群成员。</span>
               </span>
             </label>
           </div>
           <div class="settings-actions">
-            <button id="save-settings" type="button">保存配置</button>
+            <button id="save-settings" type="button">保存设置</button>
+          </div>
+          <section class="updates"><h2>软件更新</h2><div class="row">
             <button id="check-update" type="button" class="secondary">检查更新</button>
             <button id="share-update-package" type="button" class="secondary">分享更新包</button>
-          </div>
+          </div></section>
+          <details><summary>最近的运行记录</summary><pre id="events"></pre></details>
         </div>
       </section>
     </main>
 
-    <dialog id="create-dialog">
+    <dialog id="file-dialog" aria-labelledby="file-heading">
+      <form id="send-file" class="modal">
+        <div class="modal-head"><h1 id="file-heading">发送文件</h1><button id="close-file" class="ghost" type="button">关闭</button></div>
+        <p id="file-recipient" class="hint"></p>
+        <label>文件路径<input id="file-path" placeholder="选择文件，或输入完整路径" required spellcheck="false" /></label>
+        <button id="pick-file" type="button" class="secondary">选择文件</button>
+        <p class="hint">也可以在聊天区拖入或粘贴多个文件，再确认发送。</p>
+        <button type="submit">发送文件</button>
+      </form>
+    </dialog>
+    <dialog id="group-options" aria-labelledby="options-heading">
+      <div class="modal"><div class="modal-head"><h1 id="options-heading">群组管理</h1><button id="close-options" class="ghost" type="button">关闭</button></div>
+        <p id="managed-group"></p>
+        <button id="group-error" class="secondary" type="button" hidden>查看连接错误</button>
+        <button id="leave-button" class="danger" type="button">移除群组</button>
+      </div>
+    </dialog>
+    <dialog id="create-dialog" aria-labelledby="create-heading">
       <form id="create-group" class="modal" autocomplete="off">
         <div class="modal-head">
-          <h1>新建群组</h1>
+          <h1 id="create-heading">新建群组</h1>
           <button id="close-create" type="button" class="ghost">关闭</button>
         </div>
-        <label>
-          网卡
-          <select id="create-bind-preset">
-            <option value="0.0.0.0:0">所有网卡</option>
-            <option value="127.0.0.1:0">本机测试</option>
-            <option value="">手动填写</option>
-          </select>
+        <label>群组名称
+          <input id="group-name" placeholder="例如：办公室" autofocus autocomplete="off" spellcheck="false" />
         </label>
-        <label>
-          手动绑定地址
-          <input id="create-bind" placeholder="0.0.0.0:0" autocomplete="off" spellcheck="false" />
-        </label>
-        <label>
-          群组名称
-          <input id="group-name" placeholder="我的 LAN Mesh" autocomplete="off" spellcheck="false" />
-        </label>
-        <div id="network-interfaces" class="list"></div>
+        <p class="hint">创建后，复制分享码发给同一局域网里的成员。</p>
+        <details><summary>网络设置（可选）</summary>
+          <label>允许从哪个网络加入
+            <select id="create-bind-preset">
+              <option value="0.0.0.0:0">所有网络（推荐）</option>
+              <option value="127.0.0.1:0">仅限本机测试</option>
+              <option value="">手动填写地址</option>
+            </select>
+          </label>
+          <label id="manual-bind-field" hidden>本机 IP 和端口
+            <input id="create-bind" placeholder="例如 192.168.1.10:9000" disabled />
+          </label>
+        </details>
         <button type="submit">创建并进入群组</button>
       </form>
     </dialog>
 
-    <dialog id="join-dialog">
+    <dialog id="join-dialog" aria-labelledby="join-heading">
       <div class="modal">
         <div class="modal-head">
-          <h1>加入群组</h1>
+          <h1 id="join-heading">加入群组</h1>
           <button id="close-join" type="button" class="ghost">关闭</button>
         </div>
 
-        <form id="discover-form" class="row" autocomplete="off">
-          <label>
-            发现监听地址
-            <span class="hint">用于自动发现 Relay；“所有网卡”会监听各网卡上的公告。</span>
-            <select id="discover-bind">
-              <option value="0.0.0.0:37020">所有网卡</option>
-              <option value="127.0.0.1:37020">本机测试</option>
-            </select>
+        <section class="join-section">
+          <label>用分享码加入
+            <textarea id="share-code-input" class="share-code" placeholder="在这里粘贴群成员发来的分享码" autofocus spellcheck="false"></textarea>
           </label>
-          <label>
-            &nbsp;
-            <button type="submit" class="secondary">刷新发现</button>
-          </label>
-        </form>
-        <div id="relays" class="list"></div>
-
-        <section>
-          <label>
-            一键分享码
-            <span class="hint">粘贴建群方分享的 lanmesh:Base64 文本，会自动解析并选择可连的 Relay 地址。</span>
-            <textarea id="share-code-input" class="share-code" placeholder="lanmesh:eyJ2ZXJzaW9uIjoxLC4uLg==" autocomplete="off" spellcheck="false"></textarea>
-          </label>
-          <button id="parse-share-code" type="button" class="secondary">解析分享码并填入</button>
+          <button id="parse-share-code" type="button" class="secondary">读取分享码</button>
         </section>
-
-        <form id="manual-join" class="modal" autocomplete="off">
+        <form id="discover-form" class="join-section">
+          <h2>查找附近的群组</h2>
+          <div class="discovery"><label>搜索范围<select id="discover-bind">
+            <option value="0.0.0.0:37020">所有网络</option>
+            <option value="127.0.0.1:37020">仅限本机</option>
+          </select></label><button type="submit" class="secondary">搜索群组</button></div>
+          <div id="relays" class="list"></div>
+        </form>
+        <form id="manual-join" class="join-section">
           <input id="manual-group-name" type="hidden" />
-          <label>
-            发起连接网卡
-            <span class="hint">通常选“自动选择”；分享码解析成功时会填入探测到可用的本机网卡。</span>
-            <select id="join-interface">
-              <option value="">自动选择</option>
-            </select>
-          </label>
-          <label>
-            Group ID
-            <span class="hint">由建群方提供的完整群组 UUID。</span>
-            <input id="manual-group-id" autocomplete="off" spellcheck="false" required />
-          </label>
-          <label>
-            Relay IP/端口
-            <span class="hint">填写建群方“连接信息”里的某个可连接地址，例如 192.168.1.10:50185。</span>
-            <input id="manual-relay-addr" placeholder="192.168.1.10:9000" autocomplete="off" spellcheck="false" required />
-          </label>
-          <label>
-            本地 IP（可选）
-            <span class="hint">需要指定从哪张网卡发起连接时填写；留空则由系统路由决定。</span>
-            <input id="manual-local-ip" placeholder="192.168.1.20" autocomplete="off" spellcheck="false" />
-          </label>
-          <button type="submit">加入并进入群组</button>
+          <p id="join-preview" class="hint">也可以手动填写群组信息。</p>
+          <details id="join-details"><summary>手动填写或修改连接信息</summary>
+            <label>群组编号<input id="manual-group-id" placeholder="粘贴完整的群组编号" spellcheck="false" required /></label>
+            <label>群组地址<input id="manual-relay-addr" placeholder="例如 192.168.1.10:9000" spellcheck="false" required /></label>
+            <label>本机网络<select id="join-interface"><option value="">自动选择（推荐）</option></select></label>
+            <label>本机 IP（可选）<input id="manual-local-ip" placeholder="留空以自动选择" spellcheck="false" /></label>
+          </details>
+          <button id="join-submit" type="submit">加入群组</button>
         </form>
       </div>
     </dialog>
 
-    <dialog id="share-dialog">
+    <dialog id="share-dialog" aria-labelledby="share-heading">
       <div class="modal">
         <div class="modal-head">
-          <h1>连接信息</h1>
+          <h1 id="share-heading">邀请成员</h1>
           <button id="close-share" type="button" class="ghost">关闭</button>
         </div>
         <p id="share-summary" class="hint"></p>
-        <div id="share-addresses" class="list"></div>
+        <p class="hint" id="share-guidance"></p>
         <label>
-          一键分享码
+          群组分享码
           <textarea id="share-code-output" class="share-code" readonly></textarea>
         </label>
         <div class="row">
           <button id="copy-share-code" type="button">复制分享码</button>
-          <button id="copy-share-text" type="button" class="secondary">复制明文信息</button>
+          <button id="copy-share-text" type="button" class="secondary">复制完整连接信息</button>
         </div>
+        <details><summary>查看群组地址</summary><div id="share-addresses" class="list"></div></details>
       </div>
     </dialog>
 
-    <dialog id="share-update-dialog">
+    <dialog id="share-update-dialog" aria-labelledby="share-update-heading">
       <form id="share-update-form" class="modal" autocomplete="off">
         <div class="modal-head">
-          <h1>分享更新包</h1>
+          <h1 id="share-update-heading">分享更新包</h1>
           <button id="close-share-update" type="button" class="ghost">关闭</button>
         </div>
         <p id="share-update-summary" class="hint"></p>
@@ -782,6 +245,15 @@
       </form>
     </dialog>
 
+    <dialog id="error-dialog" aria-labelledby="error-title">
+      <div class="modal">
+        <div class="modal-head"><h1 id="error-title">问题记录</h1><button id="close-errors" type="button" class="ghost">关闭</button></div>
+        <label>最近的问题<select id="error-choice"></select></label>
+        <label>反馈详情<textarea readonly id="error-detail" rows="7"></textarea></label>
+        <button id="copy-error" type="button">复制错误详情</button>
+        <p id="copy-result" class="hint" role="status"></p>
+      </div>
+    </dialog>
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>

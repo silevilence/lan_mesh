@@ -135,33 +135,35 @@ pub(crate) async fn resend_saved_chunks(
     let resent_chunks = messages.len();
 
     for mut message in messages {
-        if let Message::FileChunk { payload, .. } = &mut message {
+        let progress = if let Message::FileChunk { payload, .. } = &mut message {
             payload.sender_nickname = sent.sender_nickname.clone();
-            let _ = app.emit(
-                "mesh://transfer-progress",
-                TransferProgressEvent {
-                    group_id: id(group_id.0),
-                    file_id: id(payload.file_id.0),
-                    file_name: Some(payload.file_name.clone()),
-                    sender_nickname: payload.sender_nickname.clone(),
-                    direction: "outgoing",
-                    chunk_index: payload.chunk_index,
-                    chunk_count: payload.chunk_count,
-                    done_chunks: payload.chunk_index + 1,
-                    total_size: payload.total_size,
-                    status: if payload.chunk_index + 1 >= payload.chunk_count {
-                        "done"
-                    } else {
-                        "running"
-                    },
-                    path: None,
-                    error: None,
-                    from: None,
-                    target_device_id: None,
+            Some(TransferProgressEvent {
+                group_id: id(group_id.0),
+                file_id: id(payload.file_id.0),
+                file_name: Some(payload.file_name.clone()),
+                sender_nickname: payload.sender_nickname.clone(),
+                direction: "outgoing",
+                chunk_index: payload.chunk_index,
+                chunk_count: payload.chunk_count,
+                done_chunks: payload.chunk_index + 1,
+                total_size: payload.total_size,
+                status: if payload.chunk_index + 1 >= payload.chunk_count {
+                    "done"
+                } else {
+                    "running"
                 },
-            );
-        }
+                path: None,
+                error: None,
+                from: None,
+                target_device_id: None,
+            })
+        } else {
+            None
+        };
         session.route_message(message).await.map_err(err_string)?;
+        if let Some(progress) = progress {
+            let _ = app.emit("mesh://transfer-progress", progress);
+        }
     }
 
     Ok(resent_chunks)

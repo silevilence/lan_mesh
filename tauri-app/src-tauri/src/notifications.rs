@@ -70,7 +70,13 @@ pub(crate) fn notify_when_hidden(
         let handle = match notification.show() {
             Ok(handle) => handle,
             Err(error) => {
-                eprintln!("failed to show Windows notification: {error}");
+                let _ = app.emit(
+                    "mesh://desktop-error",
+                    crate::views::DesktopError {
+                        operation: "Windows 新消息通知未能显示",
+                        error: error.to_string(),
+                    },
+                );
                 return;
             }
         };

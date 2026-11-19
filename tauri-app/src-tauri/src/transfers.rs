@@ -65,14 +65,7 @@ pub(crate) async fn send_file_from_client(
         },
     );
 
-    while let Some(message) = reader.next_message().await.map_err(err_string)? {
-        runtime
-            .session()
-            .route_message(message)
-            .await
-            .map_err(err_string)?;
-        let chunk_index = done_chunks;
-        done_chunks += 1;
+    let emit_progress = |chunk_index, done_chunks, status, error| {
         let _ = app.emit(
             "mesh://transfer-progress",
             TransferProgressEvent {
@@ -85,17 +78,36 @@ pub(crate) async fn send_file_from_client(
                 chunk_count,
                 done_chunks,
                 total_size,
-                status: if done_chunks >= chunk_count {
-                    "done"
-                } else {
-                    "running"
-                },
+                status,
                 path: None,
-                error: None,
+                error,
                 from: None,
                 target_device_id: None,
             },
         );
+    };
+    let send_result: Result<(), String> = async {
+        while let Some(message) = reader.next_message().await.map_err(err_string)? {
+            runtime
+                .session()
+                .route_message(message)
+                .await
+                .map_err(err_string)?;
+            let chunk_index = done_chunks;
+            done_chunks += 1;
+            let status = if done_chunks >= chunk_count {
+                "done"
+            } else {
+                "running"
+            };
+            emit_progress(chunk_index, done_chunks, status, None);
+        }
+        Ok(())
+    }
+    .await;
+    if let Err(error) = send_result {
+        emit_progress(done_chunks, done_chunks, "failed", Some(error.clone()));
+        return Err(error);
     }
 
     Ok(SendFileResponse {

@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import {
   conversationPresentation,
   displayName,
+  decodeShare,
+  encodeShare,
   routeLabel,
   syncMemberNicknames,
   visibleMembers,
@@ -11,7 +13,7 @@ import {
 test("a routed member is described without claiming a direct connection", () => {
   const member = { device_id: "remote", online: true };
   const routes = [{ target_device_id: "remote", path: ["relay", "remote"] }];
-  assert.equal(routeLabel(member, routes), "路由可达");
+  assert.equal(routeLabel(member, routes), "可以联系");
 });
 
 test("an online member supersedes its stale offline row after reconnect", () => {
@@ -56,4 +58,20 @@ test("direct chat shows the synchronized name and returns to group chat", () => 
       leaveAction: "open-group",
     },
   );
+});
+
+test("both invitation copy buttons produce usable input, including Chinese group names", () => {
+  const group = { group_name: "设计讨论 lanmesh:abcd", group_id: "group", relay_addrs: ["192.168.1.2:8080"] };
+  const code = encodeShare(group);
+  assert.deepEqual(decodeShare(code), group);
+  assert.deepEqual(decodeShare(code.slice("lanmesh:".length)), group);
+  assert.deepEqual(decodeShare(`群组：${group.group_name}\r\n分享码：${code}`), group);
+  assert.deepEqual(decodeShare(`分享码: ${code}`), group);
+  assert.throws(() => decodeShare("lanmesh:无效"));
+});
+
+test("the group exit label describes the effect on this device for each role", () => {
+  const group = { type: "group" };
+  assert.equal(conversationPresentation({ role: "relay" }, group).leaveLabel, "停止本机群组");
+  assert.equal(conversationPresentation({ role: "leaf" }, group).leaveLabel, "退出群组");
 });

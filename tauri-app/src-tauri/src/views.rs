@@ -5,6 +5,12 @@ use lan_mesh_core::{
 };
 use serde::Serialize;
 
+#[derive(Clone, Serialize)]
+pub(crate) struct DesktopError {
+    pub(crate) operation: &'static str,
+    pub(crate) error: String,
+}
+
 #[derive(Serialize)]
 pub(crate) struct SessionResponse {
     pub(crate) device_id: String,
@@ -172,6 +178,7 @@ pub(crate) struct SharedUpdatePackageResponse {
 pub(crate) struct ShareUpdatePackagesResponse {
     pub(crate) shared: Vec<SharedUpdatePackageResponse>,
     pub(crate) failed_groups: Vec<String>,
+    pub(crate) errors: Vec<String>,
 }
 
 pub(crate) fn session_response(

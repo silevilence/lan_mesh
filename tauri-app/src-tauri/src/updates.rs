@@ -155,7 +155,13 @@ pub(crate) async fn install_update(
     if retain_installer
         && let Err(error) = store_retained_update_package(&app, &update, &bytes).await
     {
-        eprintln!("failed to retain update package: {error}");
+        let _ = app.emit(
+            "mesh://desktop-error",
+            crate::views::DesktopError {
+                operation: "未能保留安装包供群成员使用",
+                error,
+            },
+        );
     }
     update.install(&bytes).map_err(|err| err.to_string())
 }
@@ -288,13 +294,18 @@ pub(crate) async fn share_retained_update_package(
 ) -> Result<ShareUpdatePackagesResponse, String> {
     let package = retained_update_package(app)
         .await?
-        .ok_or_else(|| "请先检查更新获取安装包".to_string())?;
+        .ok_or_else(|| "本机还没有保留的更新安装包".to_string())?;
     let mut shared = Vec::with_capacity(group_ids.len());
     let mut failed_groups = Vec::new();
+    let mut errors = Vec::new();
     for group_id in group_ids {
-        let Ok(runtime) = state.groups.runtime(group_id).await else {
-            failed_groups.push(id(group_id.0));
-            continue;
+        let runtime = match state.groups.runtime(group_id).await {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                errors.push(format!("{}: {error}", group_id.0));
+                failed_groups.push(id(group_id.0));
+                continue;
+            }
         };
         let transfer = send_file_from_client(
             app,
@@ -311,15 +322,19 @@ pub(crate) async fn share_retained_update_package(
                 group_id: id(runtime.group_id().0),
                 file_id: transfer.file_id,
             }),
-            Err(_) => failed_groups.push(id(runtime.group_id().0)),
+            Err(error) => {
+                errors.push(format!("{}: {error}", group_id.0));
+                failed_groups.push(id(group_id.0));
+            }
         }
     }
     if shared.is_empty() {
-        return Err("所选群组当前都无法发送更新包".to_string());
+        return Err(errors.join("\n"));
     }
     Ok(ShareUpdatePackagesResponse {
         shared,
         failed_groups,
+        errors,
     })
 }
 

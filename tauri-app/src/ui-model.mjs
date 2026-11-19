@@ -43,8 +43,8 @@ export function syncMemberNicknames(nicknames, members) {
 
 export function routeLabel(member, routes) {
   if (!member.online) return "离线";
-  if (!routes.some((item) => item.target_device_id === member.device_id)) return "可达状态未知";
-  return "路由可达";
+  if (!routes.some((item) => item.target_device_id === member.device_id)) return "尚未确认能否联系";
+  return "可以联系";
 }
 
 export function conversationPresentation(session, selected, nameOf) {
@@ -52,8 +52,21 @@ export function conversationPresentation(session, selected, nameOf) {
   return {
     title: isGroup ? session.group_name || "群聊" : `单聊 ${nameOf(selected.id)}`,
     leaveLabel: isGroup
-      ? session.role === "relay" ? "解散群组" : "退出群组"
+      ? session.role === "relay" ? "停止本机群组" : "退出群组"
       : "返回群聊",
     leaveAction: isGroup ? "close-session" : "open-group",
   };
+}
+
+export function encodeShare(value) {
+  const bytes = new TextEncoder().encode(JSON.stringify(value));
+  return `lanmesh:${btoa(String.fromCharCode(...bytes))}`;
+}
+
+export function decodeShare(value) {
+  const input = String(value ?? "").trim();
+  const line = input.split(/\r?\n/).at(-1).trim();
+  const code = line.match(/^(?:分享码\s*[:：]\s*)?lanmesh:([A-Za-z0-9+/=]+)$/i)?.[1] || input;
+  const bytes = Uint8Array.from(atob(code), (char) => char.charCodeAt(0));
+  return JSON.parse(new TextDecoder().decode(bytes));
 }

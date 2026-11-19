@@ -97,8 +97,8 @@ fn hide_main_window(window: &tauri::WebviewWindow) {
     let settings = window.state::<TraySettings>();
     if settings.first_hide.swap(false, Ordering::Relaxed) {
         rfd::MessageDialog::new()
-            .set_title("LAN Mesh 将驻留到托盘")
-            .set_description("应用会继续在系统托盘中运行。请通过托盘图标打开主界面或退出程序。")
+            .set_title("LAN Mesh 将在后台运行")
+            .set_description("点击任务栏右侧的 LAN Mesh 图标可以重新打开窗口。要退出程序，右键点击该图标，选择“退出程序”。")
             .set_buttons(rfd::MessageButtons::Ok)
             .show();
     }
