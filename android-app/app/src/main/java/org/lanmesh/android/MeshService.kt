@@ -34,6 +34,9 @@ class MeshService : Service() {
     inner class LocalBinder : Binder() { internal val service get() = this@MeshService }
     private val binder = LocalBinder()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val sessionLifetime = SupervisorJob()
+    private val sessionScope = CoroutineScope(sessionLifetime + Dispatchers.Main.immediate)
+    private val transitions = mutableMapOf<UUID, Job>()
     private val runtimes = mutableMapOf<UUID, GroupRuntime>()
     private val current = MutableStateFlow<Map<UUID, GroupView>>(emptyMap())
     internal val groups = current.asStateFlow()
@@ -104,24 +107,35 @@ class MeshService : Service() {
         val id = config.groupId
         runtimes[id] = runtime
         current.value += id to GroupView(config)
-        scope.launch {
-            // Opening registers a native handle. A close or replacement during open must reclaim it.
+        transition(id) {
+            if (runtimes[id] !== runtime) return@transition
             try {
-                withContext(NonCancellable) {
-                    val session = MeshSession.open(config, cacheDir) { raw ->
-                        scope.launch {
-                            if (runtimes[id] === runtime) event(runtime, JSONObject(raw))
-                        }
+                val session = MeshSession.open(config, cacheDir) { raw ->
+                    scope.launch {
+                        if (runtimes[id] === runtime) event(runtime, JSONObject(raw))
                     }
-                    if (runtimes[id] !== runtime) session.close() else {
-                        runtime.session = session
-                        refreshMembers(runtime)
-                    }
+                }
+                if (runtimes[id] !== runtime) session.close() else {
+                    runtime.session = session
+                    refreshMembers(runtime)
                 }
             } catch (e: Exception) {
                 if (runtimes[id] === runtime) change(id) { it.copy(error = e.message) }
             }
         }
+    }
+
+    // Native open/close may suspend. A replacement must finish retiring the old
+    // socket before it announces the same device identity on a new connection.
+    private fun transition(id: UUID, action: suspend () -> Unit) {
+        val previous = transitions[id]
+        val job = sessionScope.launch(start = CoroutineStart.LAZY) {
+            previous?.join()
+            action()
+        }
+        transitions[id] = job
+        job.invokeOnCompletion { if (transitions[id] === job) transitions.remove(id) }
+        job.start()
     }
 
     private fun event(runtime: GroupRuntime, event: JSONObject) {
@@ -253,7 +267,7 @@ class MeshService : Service() {
         val runtime = runtimes.remove(id) ?: return
         current.value -= id
         runtime.membersJob?.cancel()
-        runtime.session?.let { session -> scope.launch(NonCancellable) { session.close() } }
+        transition(id) { runtime.session?.close() }
     }
 
     private fun notification(): Notification {
@@ -282,6 +296,7 @@ class MeshService : Service() {
         monitor.close()
         runtimes.keys.toList().forEach(::detach)
         scope.cancel()
+        sessionLifetime.complete()
         super.onDestroy()
     }
 

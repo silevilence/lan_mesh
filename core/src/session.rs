@@ -1,7 +1,7 @@
 mod leaf;
 mod transport;
 use transport::*;
-#[cfg(feature = "relay")]
+#[cfg(all(feature = "relay", not(target_os = "android")))]
 mod relay;
 use crate::{
     DeviceId, DeviceRole, FrameError, GroupId, HeartbeatPayload, MemberChange,
@@ -136,7 +136,7 @@ pub struct MemberSnapshot {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-#[cfg(feature = "relay")]
+#[cfg(all(feature = "relay", not(target_os = "android")))]
 pub struct RouteSnapshot {
     pub target_device_id: DeviceId,
     pub next_hop: NeighborId,
@@ -165,9 +165,9 @@ struct SessionInner {
     config: ConnectionConfig,
     neighbors: Mutex<HashMap<NeighborId, NeighborConnection>>,
     seen_messages: Mutex<HashMap<MessageId, Instant>>,
-    #[cfg(feature = "relay")]
+    #[cfg(all(feature = "relay", not(target_os = "android")))]
     routes: Mutex<HashMap<DeviceId, RouteEntry>>,
-    #[cfg(feature = "relay")]
+    #[cfg(all(feature = "relay", not(target_os = "android")))]
     reverse_routes: Mutex<HashMap<MessageId, ReverseRouteEntry>>,
     members: Mutex<HashMap<DeviceId, MemberEntry>>,
     events: broadcast::Sender<SessionEvent>,
@@ -205,14 +205,14 @@ struct MemberEntry {
     last_seen: Instant,
 }
 
-#[cfg(feature = "relay")]
+#[cfg(all(feature = "relay", not(target_os = "android")))]
 struct RouteEntry {
     next_hop: NeighborId,
     path: Vec<DeviceId>,
     updated_at: Instant,
 }
 
-#[cfg(feature = "relay")]
+#[cfg(all(feature = "relay", not(target_os = "android")))]
 struct ReverseRouteEntry {
     neighbor_id: NeighborId,
     created_at: Instant,
@@ -229,12 +229,12 @@ impl Session {
         )
     }
 
-    #[cfg(feature = "relay")]
+    #[cfg(all(feature = "relay", not(target_os = "android")))]
     pub fn new(device_id: DeviceId, group_id: GroupId, role: DeviceRole) -> Self {
         Self::with_config(device_id, group_id, role, ConnectionConfig::default())
     }
 
-    #[cfg(feature = "relay")]
+    #[cfg(all(feature = "relay", not(target_os = "android")))]
     pub fn with_config(
         device_id: DeviceId,
         group_id: GroupId,
@@ -270,9 +270,9 @@ impl Session {
                 config,
                 neighbors: Mutex::new(HashMap::new()),
                 seen_messages: Mutex::new(HashMap::new()),
-                #[cfg(feature = "relay")]
+                #[cfg(all(feature = "relay", not(target_os = "android")))]
                 routes: Mutex::new(HashMap::new()),
-                #[cfg(feature = "relay")]
+                #[cfg(all(feature = "relay", not(target_os = "android")))]
                 reverse_routes: Mutex::new(HashMap::new()),
                 members: Mutex::new(members),
                 events,
@@ -482,45 +482,26 @@ impl Session {
         self.inner.shutdown.send_replace(true);
         self.inner.leaf_reconnect_target.lock().await.take();
         self.inner.seen_messages.lock().await.clear();
-        #[cfg(feature = "relay")]
+        #[cfg(all(feature = "relay", not(target_os = "android")))]
         self.inner.routes.lock().await.clear();
-        #[cfg(feature = "relay")]
+        #[cfg(all(feature = "relay", not(target_os = "android")))]
         self.inner.reverse_routes.lock().await.clear();
-        self.inner.members.lock().await.clear();
         let neighbor_ids: Vec<_> = self.inner.neighbors.lock().await.keys().copied().collect();
         for neighbor_id in neighbor_ids {
             self.inner.remove_neighbor(neighbor_id).await;
         }
-    }
-
-    pub async fn discover_relays(
-        &self,
-        bind_addr: SocketAddr,
-        duration: Duration,
-    ) -> Result<Vec<RelayAnnouncement>, NetworkError> {
-        if self.inner.role != DeviceRole::Leaf {
-            return Err(NetworkError::WrongRole {
-                required: DeviceRole::Leaf,
-                actual: self.inner.role,
-            });
-        }
-
-        Self::scan_relays(bind_addr, duration).await
-    }
-
-    pub async fn scan_relays(
-        bind_addr: SocketAddr,
-        duration: Duration,
-    ) -> Result<Vec<RelayAnnouncement>, NetworkError> {
-        let socket = UdpSocket::bind(bind_addr).await?;
-        Ok(collect_relay_announcements(socket, duration).await)
+        self.inner.members.lock().await.clear();
     }
 }
 
 impl SessionInner {
     async fn emit(&self, event: SessionEvent) {
         if let Some(inbox) = &self.inbox {
-            let _ = inbox.send(event).await;
+            let mut shutdown = self.shutdown.subscribe();
+            tokio::select! {
+                _ = inbox.send(event) => {}
+                _ = shutdown.wait_for(|closed| *closed) => {}
+            }
         } else {
             let _ = self.events.send(event);
         }
@@ -608,17 +589,17 @@ impl SessionInner {
     }
 
     async fn broadcast_message(&self, message: Message) -> Result<(), NetworkError> {
-        #[cfg(feature = "relay")]
+        #[cfg(all(feature = "relay", not(target_os = "android")))]
         {
             self.send_except(None, message).await
         }
-        #[cfg(not(feature = "relay"))]
+        #[cfg(not(all(feature = "relay", not(target_os = "android"))))]
         {
             self.inject_message(message).await
         }
     }
 
-    #[cfg(feature = "relay")]
+    #[cfg(all(feature = "relay", not(target_os = "android")))]
     async fn send_except(
         &self,
         except: Option<NeighborId>,
@@ -660,7 +641,7 @@ impl SessionInner {
             .lock()
             .await
             .retain(|_, seen_at| now.duration_since(*seen_at) < MESSAGE_ID_TTL);
-        #[cfg(feature = "relay")]
+        #[cfg(all(feature = "relay", not(target_os = "android")))]
         self.reverse_routes
             .lock()
             .await
@@ -672,11 +653,11 @@ impl SessionInner {
         if header.group_id != self.group_id || !self.mark_seen(header.message_id).await {
             return Ok(());
         }
-        #[cfg(feature = "relay")]
+        #[cfg(all(feature = "relay", not(target_os = "android")))]
         {
             self.route_outbound_message(message).await
         }
-        #[cfg(not(feature = "relay"))]
+        #[cfg(not(all(feature = "relay", not(target_os = "android"))))]
         {
             let id = self
                 .neighbors
@@ -690,34 +671,6 @@ impl SessionInner {
         }
     }
 
-    async fn answer_route_request(
-        &self,
-        neighbor_id: NeighborId,
-        header: &MessageHeader,
-        payload: &crate::RouteDiscoveryRequestPayload,
-    ) -> Result<(), NetworkError> {
-        let path = append_device(payload.path.clone(), self.device_id);
-        let response = Message::RouteDiscoveryResponse {
-            header: MessageHeader {
-                message_id: MessageId::new(),
-                group_id: self.group_id,
-                source_device_id: self.device_id,
-                target: MessageTarget::Device {
-                    device_id: header.source_device_id,
-                },
-                ttl: DEFAULT_ROUTE_TTL.max(path.len() as u8),
-                hop_count: 0,
-                timestamp_ms: now_timestamp_ms(),
-            },
-            payload: crate::RouteDiscoveryResponsePayload {
-                request_message_id: header.message_id,
-                path,
-            },
-        };
-        self.send_message(neighbor_id, response).await?;
-        Ok(())
-    }
-
     async fn handle_received_message(
         self: &Arc<Self>,
         neighbor_id: NeighborId,
@@ -728,7 +681,7 @@ impl SessionInner {
             self.note_neighbor_device(neighbor_id, header.source_device_id)
                 .await;
         }
-        #[cfg(feature = "relay")]
+        #[cfg(all(feature = "relay", not(target_os = "android")))]
         if self.role == DeviceRole::Relay
             || header.hop_count == 0
             || !matches!(message, Message::MemberChanged { .. })
@@ -742,34 +695,51 @@ impl SessionInner {
         }
         match message {
             Message::MemberChanged { payload, .. } => {
+                // A relay's initial snapshot may describe our previous connection.
+                if payload.device_id == self.device_id {
+                    return Ok(());
+                }
                 self.apply_member_change(
                     payload.device_id,
                     payload.change,
                     payload.nickname_updated.then(|| payload.nickname.clone()),
                 )
                 .await;
-                #[cfg(feature = "relay")]
-                if self.role == DeviceRole::Relay && header.source_device_id == payload.device_id {
-                    self.flood_message(Some(neighbor_id), message).await?;
+                #[cfg(all(feature = "relay", not(target_os = "android")))]
+                if self.role == DeviceRole::Relay {
+                    if payload.change == MemberChange::Online {
+                        self.learn_advertised_member(
+                            neighbor_id,
+                            header.source_device_id,
+                            payload.device_id,
+                        )
+                        .await;
+                    }
+                    if header.source_device_id == payload.device_id
+                        || payload.change == MemberChange::Offline
+                    {
+                        self.flood_message(Some(neighbor_id), message).await?;
+                    }
                 }
             }
+            #[cfg(all(feature = "relay", not(target_os = "android")))]
             Message::RouteDiscoveryRequest { header, payload }
                 if payload.target_device_id == self.device_id =>
             {
                 self.answer_route_request(neighbor_id, header, payload)
                     .await?;
             }
-            #[cfg(feature = "relay")]
+            #[cfg(all(feature = "relay", not(target_os = "android")))]
             Message::RouteDiscoveryRequest { header, payload } => {
                 self.handle_route_discovery_request(neighbor_id, header, payload)
                     .await?;
             }
-            #[cfg(feature = "relay")]
+            #[cfg(all(feature = "relay", not(target_os = "android")))]
             Message::RouteDiscoveryResponse { header, payload } => {
                 self.handle_route_discovery_response(header, payload)
                     .await?;
             }
-            #[cfg(feature = "relay")]
+            #[cfg(all(feature = "relay", not(target_os = "android")))]
             _ => match header.target {
                 MessageTarget::Broadcast => self.flood_message(Some(neighbor_id), message).await?,
                 MessageTarget::Device { device_id } if device_id == self.device_id => {}
@@ -777,7 +747,7 @@ impl SessionInner {
                     let _ = self.forward_direct_message(device_id, message).await?;
                 }
             },
-            #[cfg(not(feature = "relay"))]
+            #[cfg(not(all(feature = "relay", not(target_os = "android"))))]
             _ => {}
         }
         Ok(())
@@ -801,7 +771,7 @@ impl SessionInner {
             member.nickname = nickname;
         }
         drop(members);
-        #[cfg(feature = "relay")]
+        #[cfg(all(feature = "relay", not(target_os = "android")))]
         if change == MemberChange::Offline {
             self.remove_routes_for_device(device_id).await;
         }
@@ -823,8 +793,8 @@ impl SessionInner {
             });
         self.apply_member_change(device_id, MemberChange::Online, None)
             .await;
-        #[cfg(feature = "relay")]
-        if _newly_identified {
+        #[cfg(all(feature = "relay", not(target_os = "android")))]
+        if _newly_identified && self.role == DeviceRole::Relay {
             self.sync_members_to_neighbor(neighbor_id).await;
         }
     }
@@ -832,9 +802,14 @@ impl SessionInner {
     async fn remove_neighbor(self: &Arc<Self>, neighbor_id: NeighborId) {
         let removed = self.neighbors.lock().await.remove(&neighbor_id);
         if let Some(neighbor) = removed {
-            neighbor.read_handle.abort();
             neighbor.write_handle.abort();
-            neighbor.heartbeat_handle.abort();
+            if self.role == DeviceRole::Leaf {
+                for (id, member) in self.members.lock().await.iter_mut() {
+                    if *id != self.device_id {
+                        member.online = false;
+                    }
+                }
+            }
             self.emit(SessionEvent::NeighborOffline {
                 neighbor_id,
                 peer_addr: neighbor.peer_addr,
@@ -843,8 +818,6 @@ impl SessionInner {
             if let Some(device_id) = neighbor.device_id {
                 self.apply_member_change(device_id, MemberChange::Offline, None)
                     .await;
-                #[cfg(feature = "relay")]
-                self.remove_routes_for_device(device_id).await;
                 let _ = self
                     .broadcast_message(member_changed_message(
                         self,
@@ -854,16 +827,18 @@ impl SessionInner {
                     ))
                     .await;
             }
-            #[cfg(feature = "relay")]
+            #[cfg(all(feature = "relay", not(target_os = "android")))]
             self.routes
                 .lock()
                 .await
                 .retain(|_, route| route.next_hop != neighbor_id);
-            #[cfg(feature = "relay")]
+            #[cfg(all(feature = "relay", not(target_os = "android")))]
             self.reverse_routes
                 .lock()
                 .await
                 .retain(|_, route| route.neighbor_id != neighbor_id);
+            neighbor.read_handle.abort();
+            neighbor.heartbeat_handle.abort();
         }
     }
 }
@@ -949,43 +924,5 @@ fn member_changed_message(
     }
 }
 
-async fn collect_relay_announcements(
-    socket: UdpSocket,
-    duration: Duration,
-) -> Vec<RelayAnnouncement> {
-    let deadline = time::sleep(duration);
-    tokio::pin!(deadline);
-    let mut buf = [0; 2048];
-    let mut relays = HashMap::new();
-
-    loop {
-        tokio::select! {
-            _ = &mut deadline => return relays.into_values().collect(),
-            received = socket.recv_from(&mut buf) => {
-                let Ok((len, _)) = received else {
-                    continue;
-                };
-                if let Ok(announcement) = serde_json::from_slice::<RelayAnnouncement>(&buf[..len]) {
-                    relays.insert(
-                        (
-                            announcement.device_id,
-                            announcement.group_id,
-                            announcement.tcp_addr,
-                        ),
-                        announcement,
-                    );
-                }
-            }
-        }
-    }
-}
-
-fn append_device(mut path: Vec<DeviceId>, device_id: DeviceId) -> Vec<DeviceId> {
-    if path.last() != Some(&device_id) {
-        path.push(device_id);
-    }
-    path
-}
-
-#[cfg(all(test, feature = "relay"))]
+#[cfg(all(test, feature = "relay", not(target_os = "android")))]
 mod tests;

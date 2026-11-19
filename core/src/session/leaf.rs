@@ -104,4 +104,57 @@ impl Session {
             .map_err(|_| NetworkError::ChannelClosed)?;
         result.await.map_err(|_| NetworkError::ChannelClosed)?
     }
+    pub async fn discover_relays(
+        &self,
+        bind_addr: SocketAddr,
+        duration: Duration,
+    ) -> Result<Vec<RelayAnnouncement>, NetworkError> {
+        if self.inner.role != DeviceRole::Leaf {
+            return Err(NetworkError::WrongRole {
+                required: DeviceRole::Leaf,
+                actual: self.inner.role,
+            });
+        }
+
+        Self::scan_relays(bind_addr, duration).await
+    }
+
+    pub async fn scan_relays(
+        bind_addr: SocketAddr,
+        duration: Duration,
+    ) -> Result<Vec<RelayAnnouncement>, NetworkError> {
+        let socket = UdpSocket::bind(bind_addr).await?;
+        Ok(collect_relay_announcements(socket, duration).await)
+    }
+}
+
+pub(super) async fn collect_relay_announcements(
+    socket: UdpSocket,
+    duration: Duration,
+) -> Vec<RelayAnnouncement> {
+    let deadline = time::sleep(duration);
+    tokio::pin!(deadline);
+    let mut buf = [0; 2048];
+    let mut relays = HashMap::new();
+
+    loop {
+        tokio::select! {
+            _ = &mut deadline => return relays.into_values().collect(),
+            received = socket.recv_from(&mut buf) => {
+                let Ok((len, _)) = received else {
+                    continue;
+                };
+                if let Ok(announcement) = serde_json::from_slice::<RelayAnnouncement>(&buf[..len]) {
+                    relays.insert(
+                        (
+                            announcement.device_id,
+                            announcement.group_id,
+                            announcement.tcp_addr,
+                        ),
+                        announcement,
+                    );
+                }
+            }
+        }
+    }
 }

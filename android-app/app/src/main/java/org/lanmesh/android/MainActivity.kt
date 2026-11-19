@@ -65,9 +65,11 @@ class MainActivity : ComponentActivity() {
 
     private fun openBatterySettings() {
         val intent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
-        if (intent.resolveActivity(packageManager) != null) startActivity(intent)
-        else startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-            android.net.Uri.fromParts("package", packageName, null)))
+        try { startActivity(intent) }
+        catch (_: android.content.ActivityNotFoundException) {
+            startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                android.net.Uri.fromParts("package", packageName, null)))
+        }
     }
 }
 

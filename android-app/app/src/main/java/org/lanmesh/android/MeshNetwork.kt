@@ -48,7 +48,7 @@ internal class MeshNetwork(context: Context, private val changed: (NetworkRoute)
     fun start() {
         active = true
         connectivity.registerDefaultNetworkCallback(defaultWatcher, handler)
-        val local = NetworkRequest.Builder().clearCapabilities()
+        val local = NetworkRequest.Builder()
             .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
             .addTransportType(NetworkCapabilities.TRANSPORT_ETHERNET).build()
         connectivity.registerNetworkCallback(local, lanWatcher, handler)

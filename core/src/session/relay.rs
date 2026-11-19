@@ -91,6 +91,34 @@ impl Session {
 }
 
 impl SessionInner {
+    pub(super) async fn answer_route_request(
+        &self,
+        neighbor_id: NeighborId,
+        header: &MessageHeader,
+        payload: &crate::RouteDiscoveryRequestPayload,
+    ) -> Result<(), NetworkError> {
+        let path = append_device(payload.path.clone(), self.device_id);
+        let response = Message::RouteDiscoveryResponse {
+            header: MessageHeader {
+                message_id: MessageId::new(),
+                group_id: self.group_id,
+                source_device_id: self.device_id,
+                target: MessageTarget::Device {
+                    device_id: header.source_device_id,
+                },
+                ttl: DEFAULT_ROUTE_TTL.max(path.len() as u8),
+                hop_count: 0,
+                timestamp_ms: now_timestamp_ms(),
+            },
+            payload: crate::RouteDiscoveryResponsePayload {
+                request_message_id: header.message_id,
+                path,
+            },
+        };
+        self.send_message(neighbor_id, response).await?;
+        Ok(())
+    }
+
     pub(super) async fn route_outbound_message(
         &self,
         message: Message,
@@ -249,6 +277,28 @@ impl SessionInner {
             .ok_or(NetworkError::ChannelClosed)
     }
 
+    /// A newly connected relay learns older members from the neighbor's snapshot.
+    /// Keep an established next hop when another neighbor describes the same member.
+    pub(super) async fn learn_advertised_member(
+        &self,
+        neighbor: NeighborId,
+        source: DeviceId,
+        member: DeviceId,
+    ) {
+        if member == self.device_id || member == source {
+            return;
+        }
+        self.routes
+            .lock()
+            .await
+            .entry(member)
+            .or_insert_with(|| RouteEntry {
+                next_hop: neighbor,
+                path: vec![self.device_id, source, member],
+                updated_at: Instant::now(),
+            });
+    }
+
     pub(super) async fn store_route(
         &self,
         target_device_id: DeviceId,
@@ -338,4 +388,11 @@ fn next_hop_message(message: &Message) -> Option<Message> {
     let mut message = message.clone();
     message_header_mut(&mut message).hop_count += 1;
     Some(message)
+}
+
+fn append_device(mut path: Vec<DeviceId>, device_id: DeviceId) -> Vec<DeviceId> {
+    if path.last() != Some(&device_id) {
+        path.push(device_id);
+    }
+    path
 }

@@ -811,6 +811,36 @@ async fn newly_joined_leaf_receives_members_that_are_not_direct_neighbors() {
 }
 
 #[tokio::test]
+async fn relay_snapshot_cannot_replace_the_local_nickname_on_rejoin() {
+    let group = GroupId::new();
+    let relay = Session::new(DeviceId::new(), group, DeviceRole::Relay);
+    let leaf = Session::leaf(DeviceId::new(), group);
+    leaf.announce_nickname(Some("current".into()))
+        .await
+        .unwrap();
+    let stale = member_changed_message(
+        &relay.inner,
+        leaf.device_id(),
+        MemberChange::Offline,
+        Some(Some("previous".into())),
+    );
+    leaf.inner
+        .handle_received_message(NeighborId::new(), &stale)
+        .await
+        .unwrap();
+    let own = leaf
+        .members()
+        .await
+        .into_iter()
+        .find(|member| member.device_id == leaf.device_id())
+        .unwrap();
+    assert_eq!(own.nickname.as_deref(), Some("current"));
+    assert!(own.online);
+    leaf.destroy().await;
+    relay.destroy().await;
+}
+
+#[tokio::test]
 async fn member_snapshot_includes_the_remote_display_name() {
     let group_id = GroupId::new();
     let named_leaf_device = DeviceId::new();
@@ -851,7 +881,7 @@ async fn relay_announcement_is_collected_over_udp() {
     let relay = Session::with_config(relay_device, group_id, DeviceRole::Relay, fast_config());
     let listener = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let announce_addr = listener.local_addr().unwrap();
-    let collecting = tokio::spawn(collect_relay_announcements(
+    let collecting = tokio::spawn(leaf::collect_relay_announcements(
         listener,
         Duration::from_millis(80),
     ));
@@ -899,4 +929,51 @@ async fn session_lifecycle_apis_create_join_destroy() {
     leaf.destroy().await;
     assert!(leaf.neighbors().await.is_empty());
     assert!(leaf.members().await.is_empty());
+}
+
+#[tokio::test]
+async fn leaf_inbox_backpressures_and_closes_with_a_stalled_consumer() {
+    let group = GroupId::new();
+    let remote = DeviceId::new();
+    let (leaf, mut inbox) = Session::leaf_with_inbox(DeviceId::new(), group);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    leaf.connect(listener.local_addr().unwrap(), None)
+        .await
+        .unwrap();
+    let (mut peer, _) = listener.accept().await.unwrap();
+    let send_frames = async |socket: &mut TcpStream, count| {
+        for number in 0..count {
+            let msg = text_message(
+                MessageId::new(),
+                group,
+                remote,
+                MessageTarget::Broadcast,
+                &format!("frame {number}"),
+            );
+            write_message_frame(socket, &msg).await.unwrap();
+        }
+    };
+    send_frames(&mut peer, 96).await;
+    wait_until(async || inbox.capacity() == 0).await;
+    timeout(Duration::from_secs(2), async {
+        for number in 0..96 {
+            loop {
+                if let Some(SessionEvent::MessageReceived {
+                    message: Message::Text { payload, .. },
+                    ..
+                }) = inbox.recv().await
+                {
+                    assert_eq!(payload.content, format!("frame {number}"));
+                    break;
+                }
+            }
+        }
+    })
+    .await
+    .unwrap();
+    send_frames(&mut peer, 96).await;
+    wait_until(async || inbox.capacity() == 0).await;
+    timeout(Duration::from_secs(2), leaf.destroy())
+        .await
+        .unwrap();
 }
