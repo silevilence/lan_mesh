@@ -60,6 +60,8 @@ class MeshService : Service() {
 
     override fun onBind(intent: Intent): IBinder = binder
 
+    internal suspend fun discover(): List<FoundRelay> = MeshSession.discover()
+
     internal fun join(relay: FoundRelay, nickname: String): UUID {
         val previous = runtimes[relay.group]?.config
         val config = GroupConfig(relay.group, previous?.deviceId ?: UUID.randomUUID(),

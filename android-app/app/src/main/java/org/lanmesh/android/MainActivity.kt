@@ -33,28 +33,24 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        bindService(Intent(this, MeshService::class.java), connection, Context.BIND_AUTO_CREATE)
         setContent {
-            MaterialTheme {
-                Surface(Modifier.fillMaxSize()) {
-                    Column(Modifier.safeDrawingPadding().padding(20.dp)) {
-                        Text("LAN Mesh", style = MaterialTheme.typography.headlineMedium)
-                        if (batteryRestricted) BatterySettings(::openBatterySettings)
-                    }
-                }
-            }
+            val connected = service
+            if (connected == null) Box(Modifier.fillMaxSize(), contentAlignment = androidx.compose.ui.Alignment.Center) {
+                CircularProgressIndicator()
+            } else MeshApp(connected, batteryRestricted, ::openBatterySettings, ::requestConnectionNotification)
         }
     }
 
     override fun onStart() {
         super.onStart()
         MeshService.restore(this)
-        bindService(Intent(this, MeshService::class.java), connection, Context.BIND_AUTO_CREATE)
     }
 
-    override fun onStop() {
+    override fun onDestroy() {
         unbindService(connection)
         service = null
-        super.onStop()
+        super.onDestroy()
     }
 
     override fun onResume() {
