@@ -45,6 +45,7 @@ enum Command {
     File {
         peer: Option<DeviceId>,
         path: PathBuf,
+        name: String,
         file_id: FileId,
     },
     Reconnect,
@@ -140,8 +141,9 @@ async fn execute(handle: i64, command: Command) -> Result<Value> {
         Command::File {
             peer,
             path,
+            name,
             file_id,
-        } => client.send_file(peer, path, file_id).await,
+        } => client.send_file(peer, path, name, file_id).await,
         Command::Reconnect => {
             client.session.reconnect_leaf().await?;
             Ok(Value::Null)

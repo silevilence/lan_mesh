@@ -49,10 +49,10 @@ internal fun MeshApp(service: MeshService, batteryRestricted: Boolean, batterySe
                         page = "group"
                         requestNotifications()
                     }
-                    page == "group" && group != null -> GroupScreen(group, back) {
+                    page == "group" && group != null -> key(group.config.groupId) { GroupScreen(service, group, back) {
                         service.leave(group.config.groupId)
                         back()
-                    }
+                    } }
                     else -> {
                         Row(Modifier.fillMaxWidth().padding(vertical = 16.dp),
                             verticalAlignment = Alignment.CenterVertically,
@@ -180,16 +180,30 @@ private fun JoinScreen(service: MeshService, back: () -> Unit, join: (FoundRelay
 }
 
 @Composable
-private fun GroupScreen(group: GroupView, back: () -> Unit, leave: () -> Unit) {
+private fun GroupScreen(service: MeshService, group: GroupView, back: () -> Unit, leave: () -> Unit) {
     var confirm by remember { mutableStateOf(false) }
+    var members by rememberSaveable { mutableStateOf(false) }
+    var direct by rememberSaveable { mutableStateOf<String?>(null) }
+    val peer = direct?.let(UUID::fromString)
+    BackHandler(enabled = peer != null) { direct = null }
+    if (peer != null) {
+        ScreenTitle(group.members.find { it.id == peer }?.name ?: peer.toString().take(8), { direct = null })
+        Text("私聊 · ${group.config.name} · ${status(group)}", style = MaterialTheme.typography.labelLarge)
+        key(peer) { ChatPane(service, group, peer) }
+        return
+    }
     ScreenTitle(group.config.name, back) {
         TextButton(onClick = { confirm = true }) { Text("退出群组") }
     }
     Text("${status(group)} · ${group.config.address}", style = MaterialTheme.typography.bodyMedium,
         color = MaterialTheme.colorScheme.onSurfaceVariant)
     group.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-    Text("成员", Modifier.padding(top = 20.dp), style = MaterialTheme.typography.titleMedium)
-    MemberList(group)
+    TabRow(selectedTabIndex = if (members) 1 else 0) {
+        Tab(!members, onClick = { members = false }, text = { Text("群聊") })
+        Tab(members, onClick = { members = true }, text = { Text("成员") })
+    }
+    if (members) MemberList(group) { direct = it.id.toString() }
+    else ChatPane(service, group, null)
     if (confirm) AlertDialog(onDismissRequest = { confirm = false }, title = { Text("退出此群组？") },
         text = { Text("将断开连接并移除本机保存的群组身份。") },
         confirmButton = { TextButton(onClick = leave) { Text("退出") } },

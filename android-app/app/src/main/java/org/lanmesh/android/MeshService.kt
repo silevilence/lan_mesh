@@ -20,7 +20,8 @@ internal data class GroupView(
     val config: GroupConfig,
     val online: Boolean = false,
     val error: String? = null,
-    val members: List<Member> = emptyList()
+    val members: List<Member> = emptyList(),
+    val messages: List<ChatEntry> = emptyList()
 )
 
 private class GroupRuntime(val config: GroupConfig) {
@@ -114,6 +115,14 @@ class MeshService : Service() {
                 refreshMembers(runtime)
                 updateNotification()
             }
+            "text" -> {
+                val source = UUID.fromString(event.getString("source"))
+                val sender = event.nullableString("name") ?: current.value[id]?.members?.find { it.id == source }?.name
+                    ?: source.toString().take(8)
+                val entry = ChatEntry(UUID.fromString(event.getString("id")), event.nullableString("peer")?.let(UUID::fromString),
+                    false, sender, event.getString("content"), event.getLong("time"))
+                change(id) { it.copy(messages = it.messages + entry) }
+            }
             "members" -> refreshMembers(runtime)
             "warning" -> change(id) { it.copy(error = event.getString("text")) }
         }
@@ -131,6 +140,45 @@ class MeshService : Service() {
                 change(runtime.config.groupId) { it.copy(members = members) }
             } while (runtime.membersDirty)
         }
+    }
+
+    internal fun sendText(id: UUID, peer: UUID?, text: String) {
+        val runtime = runtimes[id] ?: return
+        val entry = ChatEntry(UUID.randomUUID(), peer, true, runtime.config.nickname, text, state = "发送中")
+        send(runtime, entry) { session ->
+            session.text(peer, text)
+        }
+    }
+
+    internal fun sendFile(id: UUID, peer: UUID?, uri: android.net.Uri) {
+        val runtime = runtimes[id] ?: return
+        val entry = ChatEntry(UUID.randomUUID(), peer, true, runtime.config.nickname, "所选文件", file = true, state = "准备发送")
+        send(runtime, entry) { session ->
+            withPickedFile(uri) { file, name ->
+                withContext(Dispatchers.Main) {
+                    check(runtimes[id] === runtime) { "群组已关闭" }
+                    editMessage(id, entry.id) { it.copy(text = name, state = "发送中") }
+                }
+                session.file(peer, entry.id, file, name)
+            }
+        }
+    }
+
+    private fun send(runtime: GroupRuntime, entry: ChatEntry, operation: suspend (MeshSession) -> Unit) {
+        val id = runtime.config.groupId
+        change(id) { it.copy(messages = it.messages + entry) }
+        scope.launch {
+            val state = try {
+                operation(checkNotNull(runtime.session) { "群组尚未连接" })
+                if (entry.file) "已发送" else ""
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { "发送失败：${e.localizedMessage}" }
+            if (runtimes[id] === runtime) editMessage(id, entry.id) { it.copy(state = state) }
+        }
+    }
+
+    private fun editMessage(group: UUID, id: UUID, edit: (ChatEntry) -> ChatEntry) {
+        change(group) { view -> view.copy(messages = view.messages.map { if (it.id == id) edit(it) else it }) }
     }
 
     private fun change(id: UUID, edit: (GroupView) -> GroupView) {

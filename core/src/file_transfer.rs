@@ -113,6 +113,12 @@ impl FileChunkReader {
         &self.sha256
     }
 
+    /// Keep the document provider's display name when reading a staged file.
+    pub fn with_file_name(mut self, name: String) -> Self {
+        self.file_name = name;
+        self
+    }
+
     pub fn with_sender_nickname(mut self, sender_nickname: Option<String>) -> Self {
         self.sender_nickname = sender_nickname;
         self

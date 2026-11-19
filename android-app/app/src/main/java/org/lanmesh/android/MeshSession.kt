@@ -53,9 +53,9 @@ internal class MeshSession private constructor(private val handle: Long) {
         UUID.fromString(JSONTokener(raw).nextValue() as String)
     }
 
-    suspend fun file(peer: UUID?, id: UUID, file: File) = withContext(Dispatchers.IO) {
+    suspend fun file(peer: UUID?, id: UUID, file: File, name: String) = withContext(Dispatchers.IO) {
         Native.call(handle, request("file").put("peer", peer?.toString())
-            .put("file_id", id.toString()).put("path", file.absolutePath).toString())
+            .put("file_id", id.toString()).put("path", file.absolutePath).put("name", name).toString())
         Unit
     }
 

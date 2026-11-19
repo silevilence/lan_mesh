@@ -108,6 +108,7 @@ impl Client {
         &self,
         peer: Option<DeviceId>,
         path: PathBuf,
+        name: String,
         file_id: FileId,
     ) -> Result<Value> {
         let target = peer.map_or(MessageTarget::Broadcast, |device_id| {
@@ -122,6 +123,7 @@ impl Client {
             8,
         )
         .await?
+        .with_file_name(name)
         .with_sender_nickname(Some(self.nickname.clone()));
         let count = reader.chunk_count();
         let mut sent = 0u32;
