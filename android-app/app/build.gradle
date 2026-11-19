@@ -1,0 +1,75 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+    id 'org.jetbrains.kotlin.plugin.compose'
+}
+
+def nativeLibs = layout.buildDirectory.dir('generated/jniLibs')
+android {
+    namespace 'org.lanmesh.android'
+    compileSdk 35
+    buildToolsVersion '35.0.0'
+    ndkVersion '27.2.12479018'
+    defaultConfig {
+        applicationId 'org.lanmesh.android'
+        minSdk 26
+        targetSdk 35
+        versionCode 1
+        versionName '0.1.0'
+        testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
+        ndk { abiFilters 'arm64-v8a', 'x86_64' }
+    }
+    buildFeatures { compose true }
+    sourceSets.main.res.srcDir rootProject.file('../tauri-app/src-tauri/icons/android')
+    sourceSets.main.jniLibs.srcDir(nativeLibs)
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    kotlinOptions { jvmTarget = '17' }
+}
+
+def repo = rootProject.file('..')
+def targets = ['arm64-v8a': 'aarch64-linux-android', 'x86_64': 'x86_64-linux-android']
+def buildRust = tasks.register('buildRust') {
+    inputs.files(fileTree(new File(repo, 'core/src')), fileTree(new File(repo, 'core-ffi/src')),
+        new File(repo, 'core/Cargo.toml'), new File(repo, 'core-ffi/Cargo.toml'),
+        new File(repo, 'Cargo.toml'), new File(repo, 'Cargo.lock'))
+    outputs.dir(nativeLibs)
+    doLast {
+        def host = System.getProperty('os.name').toLowerCase()
+        def platform = host.contains('windows') ? 'windows-x86_64' :
+            (host.contains('mac') ? 'darwin-x86_64' : 'linux-x86_64')
+        def toolchain = new File(android.ndkDirectory, "toolchains/llvm/prebuilt/${platform}/bin")
+        def output = new File(repo, 'target/android')
+        targets.each { abi, triple ->
+            exec {
+                workingDir repo
+                environment "CARGO_TARGET_${triple.replace('-', '_').toUpperCase()}_LINKER",
+                    new File(toolchain, "${triple}26-clang" + (host.contains('windows') ? '.cmd' : '')).absolutePath
+                environment "CARGO_TARGET_${triple.replace('-', '_').toUpperCase()}_RUSTFLAGS",
+                    '-C link-arg=-Wl,-z,max-page-size=16384'
+                commandLine 'cargo', 'build', '--locked', '--release', '--target', triple,
+                    '--target-dir', output, '-p', 'core-ffi'
+            }
+            copy {
+                from new File(output, "${triple}/release/libmesh_android.so")
+                into nativeLibs.get().dir(abi)
+            }
+        }
+    }
+}
+tasks.named('preBuild') { dependsOn(buildRust) }
+tasks.configureEach {
+    if (name.startsWith('merge') && name.endsWith('JniLibFolders')) dependsOn(buildRust)
+}
+
+dependencies {
+    implementation platform('androidx.compose:compose-bom:2024.09.03')
+    implementation 'androidx.compose.material3:material3'
+    implementation 'androidx.activity:activity-compose:1.9.3'
+    implementation 'androidx.lifecycle:lifecycle-runtime-compose:2.8.6'
+    androidTestImplementation 'androidx.test:runner:1.6.2'
+    androidTestImplementation 'androidx.test.ext:junit:1.2.1'
+    androidTestImplementation 'androidx.test.uiautomator:uiautomator:2.3.0'
+}

@@ -1,8 +1,12 @@
+mod leaf;
+mod transport;
+use transport::*;
+#[cfg(feature = "relay")]
+mod relay;
 use crate::{
     DeviceId, DeviceRole, FrameError, GroupId, HeartbeatPayload, MemberChange,
     MemberChangedPayload, Message, MessageHeader, MessageId, MessageTarget, NeighborId,
-    RouteDiscoveryRequestPayload, RouteDiscoveryResponsePayload, TextPayload, TimestampMs,
-    now_timestamp_ms, read_message_frame, write_message_frame,
+    TextPayload, TimestampMs, now_timestamp_ms, read_message_frame, write_message_frame,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -13,7 +17,7 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    net::{TcpListener, TcpSocket, TcpStream, UdpSocket, tcp::OwnedReadHalf, tcp::OwnedWriteHalf},
+    net::{TcpSocket, TcpStream, UdpSocket, tcp::OwnedReadHalf, tcp::OwnedWriteHalf},
     sync::{Mutex, broadcast, mpsc},
     task::JoinHandle,
     time::{self, Instant},
@@ -132,6 +136,7 @@ pub struct MemberSnapshot {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg(feature = "relay")]
 pub struct RouteSnapshot {
     pub target_device_id: DeviceId,
     pub next_hop: NeighborId,
@@ -160,18 +165,26 @@ struct SessionInner {
     config: ConnectionConfig,
     neighbors: Mutex<HashMap<NeighborId, NeighborConnection>>,
     seen_messages: Mutex<HashMap<MessageId, Instant>>,
+    #[cfg(feature = "relay")]
     routes: Mutex<HashMap<DeviceId, RouteEntry>>,
+    #[cfg(feature = "relay")]
     reverse_routes: Mutex<HashMap<MessageId, ReverseRouteEntry>>,
     members: Mutex<HashMap<DeviceId, MemberEntry>>,
     events: broadcast::Sender<SessionEvent>,
-    shutdown: broadcast::Sender<()>,
+    shutdown: tokio::sync::watch::Sender<bool>,
     leaf_reconnect_target: Mutex<Option<ReconnectTarget>>,
+    reconnect_now: tokio::sync::Notify,
+}
+
+struct Outbound {
+    message: Message,
+    written: Option<tokio::sync::oneshot::Sender<Result<(), NetworkError>>>,
 }
 
 struct NeighborConnection {
     peer_addr: SocketAddr,
     device_id: Option<DeviceId>,
-    sender: mpsc::UnboundedSender<Message>,
+    sender: mpsc::UnboundedSender<Outbound>,
     last_active: Arc<Mutex<Instant>>,
     read_handle: JoinHandle<()>,
     write_handle: JoinHandle<()>,
@@ -180,6 +193,7 @@ struct NeighborConnection {
 
 #[derive(Clone, Debug)]
 struct ReconnectTarget {
+    verify_group: bool,
     peer_addr: SocketAddr,
     local_ip: Option<IpAddr>,
 }
@@ -190,30 +204,52 @@ struct MemberEntry {
     last_seen: Instant,
 }
 
+#[cfg(feature = "relay")]
 struct RouteEntry {
     next_hop: NeighborId,
     path: Vec<DeviceId>,
     updated_at: Instant,
 }
 
+#[cfg(feature = "relay")]
 struct ReverseRouteEntry {
     neighbor_id: NeighborId,
     created_at: Instant,
 }
 
 impl Session {
+    pub fn leaf(device_id: DeviceId, group_id: GroupId) -> Self {
+        Self::build(
+            device_id,
+            group_id,
+            DeviceRole::Leaf,
+            ConnectionConfig::default(),
+        )
+    }
+
+    #[cfg(feature = "relay")]
     pub fn new(device_id: DeviceId, group_id: GroupId, role: DeviceRole) -> Self {
         Self::with_config(device_id, group_id, role, ConnectionConfig::default())
     }
 
+    #[cfg(feature = "relay")]
     pub fn with_config(
         device_id: DeviceId,
         group_id: GroupId,
         role: DeviceRole,
         config: ConnectionConfig,
     ) -> Self {
+        Self::build(device_id, group_id, role, config)
+    }
+
+    fn build(
+        device_id: DeviceId,
+        group_id: GroupId,
+        role: DeviceRole,
+        config: ConnectionConfig,
+    ) -> Self {
         let (events, _) = broadcast::channel(256);
-        let (shutdown, _) = broadcast::channel(1);
+        let (shutdown, _) = tokio::sync::watch::channel(false);
         let mut members = HashMap::new();
         members.insert(
             device_id,
@@ -231,12 +267,15 @@ impl Session {
                 config,
                 neighbors: Mutex::new(HashMap::new()),
                 seen_messages: Mutex::new(HashMap::new()),
+                #[cfg(feature = "relay")]
                 routes: Mutex::new(HashMap::new()),
+                #[cfg(feature = "relay")]
                 reverse_routes: Mutex::new(HashMap::new()),
                 members: Mutex::new(members),
                 events,
                 shutdown,
                 leaf_reconnect_target: Mutex::new(None),
+                reconnect_now: tokio::sync::Notify::new(),
             }),
         };
         tokio::spawn(timeout_loop(session.inner.clone()));
@@ -247,23 +286,13 @@ impl Session {
         session
     }
 
-    pub async fn create_group(
-        device_id: DeviceId,
-        group_id: GroupId,
-        bind_addr: SocketAddr,
-    ) -> Result<(Self, SocketAddr), NetworkError> {
-        let session = Self::new(device_id, group_id, DeviceRole::Relay);
-        let addr = session.listen(bind_addr).await?;
-        Ok((session, addr))
-    }
-
     pub async fn join_group(
         device_id: DeviceId,
         group_id: GroupId,
         relay_addr: SocketAddr,
         local_ip: Option<IpAddr>,
     ) -> Result<(Self, NeighborId), NetworkError> {
-        let session = Self::new(device_id, group_id, DeviceRole::Leaf);
+        let session = Self::leaf(device_id, group_id);
         match session.connect(relay_addr, local_ip).await {
             Ok(neighbor_id) => Ok((session, neighbor_id)),
             Err(err) => {
@@ -287,20 +316,6 @@ impl Session {
         self.inner.device_id
     }
 
-    pub async fn listen(&self, bind_addr: SocketAddr) -> Result<SocketAddr, NetworkError> {
-        if self.inner.role != DeviceRole::Relay {
-            return Err(NetworkError::WrongRole {
-                required: DeviceRole::Relay,
-                actual: self.inner.role,
-            });
-        }
-
-        let listener = TcpListener::bind(bind_addr).await?;
-        let local_addr = listener.local_addr()?;
-        tokio::spawn(accept_loop(self.inner.clone(), listener));
-        Ok(local_addr)
-    }
-
     pub async fn connect(
         &self,
         peer_addr: SocketAddr,
@@ -315,6 +330,7 @@ impl Session {
 
         if self.inner.role == DeviceRole::Leaf {
             *self.inner.leaf_reconnect_target.lock().await = Some(ReconnectTarget {
+                verify_group: false,
                 peer_addr,
                 local_ip,
             });
@@ -394,29 +410,6 @@ impl Session {
         Ok(message_id)
     }
 
-    pub async fn discover_route(
-        &self,
-        target_device_id: DeviceId,
-        ttl: u8,
-    ) -> Result<MessageId, NetworkError> {
-        self.inner
-            .start_route_discovery(target_device_id, ttl)
-            .await
-    }
-
-    pub async fn routes(&self) -> Vec<RouteSnapshot> {
-        let routes = self.inner.routes.lock().await;
-        routes
-            .iter()
-            .map(|(target_device_id, route)| RouteSnapshot {
-                target_device_id: *target_device_id,
-                next_hop: route.next_hop,
-                path: route.path.clone(),
-                last_updated_elapsed: route.updated_at.elapsed(),
-            })
-            .collect()
-    }
-
     pub fn member_changed_message(&self, device_id: DeviceId, change: MemberChange) -> Message {
         member_changed_message(&self.inner, device_id, change, None)
     }
@@ -482,55 +475,18 @@ impl Session {
         let _ = self
             .announce_member_change(self.inner.device_id, MemberChange::Offline)
             .await;
-        let _ = self.inner.shutdown.send(());
+        self.inner.shutdown.send_replace(true);
         self.inner.leaf_reconnect_target.lock().await.take();
         self.inner.seen_messages.lock().await.clear();
+        #[cfg(feature = "relay")]
         self.inner.routes.lock().await.clear();
+        #[cfg(feature = "relay")]
         self.inner.reverse_routes.lock().await.clear();
         self.inner.members.lock().await.clear();
         let neighbor_ids: Vec<_> = self.inner.neighbors.lock().await.keys().copied().collect();
         for neighbor_id in neighbor_ids {
             self.inner.remove_neighbor(neighbor_id).await;
         }
-    }
-
-    pub async fn start_relay_announcement(
-        &self,
-        bind_addr: SocketAddr,
-        announce_addr: SocketAddr,
-        tcp_addr: SocketAddr,
-        group_name: impl Into<String>,
-        interval: Duration,
-    ) -> Result<SocketAddr, NetworkError> {
-        if self.inner.role != DeviceRole::Relay {
-            return Err(NetworkError::WrongRole {
-                required: DeviceRole::Relay,
-                actual: self.inner.role,
-            });
-        }
-
-        let socket = UdpSocket::bind(bind_addr).await?;
-        socket.set_broadcast(true)?;
-        let local_addr = socket.local_addr()?;
-        let payload = serde_json::to_vec(&RelayAnnouncement {
-            device_id: self.inner.device_id,
-            group_id: self.inner.group_id,
-            group_name: group_name.into(),
-            tcp_addr,
-            timestamp_ms: now_timestamp_ms(),
-        })
-        .expect("relay announcement should serialize");
-        let mut shutdown = self.inner.shutdown.subscribe();
-        tokio::spawn(async move {
-            loop {
-                let _ = socket.send_to(&payload, announce_addr).await;
-                tokio::select! {
-                    _ = time::sleep(interval) => {}
-                    _ = shutdown.recv() => return,
-                }
-            }
-        });
-        Ok(local_addr)
     }
 
     pub async fn discover_relays(
@@ -545,6 +501,13 @@ impl Session {
             });
         }
 
+        Self::scan_relays(bind_addr, duration).await
+    }
+
+    pub async fn scan_relays(
+        bind_addr: SocketAddr,
+        duration: Duration,
+    ) -> Result<Vec<RelayAnnouncement>, NetworkError> {
         let socket = UdpSocket::bind(bind_addr).await?;
         Ok(collect_relay_announcements(socket, duration).await)
     }
@@ -555,6 +518,13 @@ impl SessionInner {
         self: &Arc<Self>,
         stream: TcpStream,
     ) -> Result<NeighborId, NetworkError> {
+        let mut neighbors = self.neighbors.lock().await;
+        if *self.shutdown.borrow() {
+            return Err(NetworkError::ChannelClosed);
+        }
+        if self.role == DeviceRole::Leaf && !neighbors.is_empty() {
+            return Err(NetworkError::LeafAlreadyConnected);
+        }
         let peer_addr = stream.peer_addr()?;
         let neighbor_id = NeighborId::new();
         let last_active = Arc::new(Mutex::new(Instant::now()));
@@ -570,7 +540,7 @@ impl SessionInner {
         let write_handle = tokio::spawn(write_loop(writer, receiver));
         let heartbeat_handle = tokio::spawn(heartbeat_loop(self.clone(), neighbor_id));
 
-        self.neighbors.lock().await.insert(
+        neighbors.insert(
             neighbor_id,
             NeighborConnection {
                 peer_addr,
@@ -582,6 +552,7 @@ impl SessionInner {
                 heartbeat_handle,
             },
         );
+        drop(neighbors);
         let _ = self.events.send(SessionEvent::NeighborOnline {
             neighbor_id,
             peer_addr,
@@ -617,14 +588,25 @@ impl SessionInner {
             .sender
             .clone();
         sender
-            .send(message)
+            .send(Outbound {
+                message,
+                written: None,
+            })
             .map_err(|_| NetworkError::ChannelClosed)
     }
 
     async fn broadcast_message(&self, message: Message) -> Result<(), NetworkError> {
-        self.send_except(None, message).await
+        #[cfg(feature = "relay")]
+        {
+            self.send_except(None, message).await
+        }
+        #[cfg(not(feature = "relay"))]
+        {
+            self.inject_message(message).await
+        }
     }
 
+    #[cfg(feature = "relay")]
     async fn send_except(
         &self,
         except: Option<NeighborId>,
@@ -640,7 +622,10 @@ impl SessionInner {
             .collect();
         for sender in senders {
             sender
-                .send(message.clone())
+                .send(Outbound {
+                    message: message.clone(),
+                    written: None,
+                })
                 .map_err(|_| NetworkError::ChannelClosed)?;
         }
         Ok(())
@@ -663,6 +648,7 @@ impl SessionInner {
             .lock()
             .await
             .retain(|_, seen_at| now.duration_since(*seen_at) < MESSAGE_ID_TTL);
+        #[cfg(feature = "relay")]
         self.reverse_routes
             .lock()
             .await
@@ -674,21 +660,50 @@ impl SessionInner {
         if header.group_id != self.group_id || !self.mark_seen(header.message_id).await {
             return Ok(());
         }
-        self.route_outbound_message(message).await
+        #[cfg(feature = "relay")]
+        {
+            self.route_outbound_message(message).await
+        }
+        #[cfg(not(feature = "relay"))]
+        {
+            let id = self
+                .neighbors
+                .lock()
+                .await
+                .keys()
+                .next()
+                .copied()
+                .ok_or(NetworkError::ChannelClosed)?;
+            self.send_message(id, message).await
+        }
     }
 
-    async fn route_outbound_message(&self, message: Message) -> Result<(), NetworkError> {
-        match message_header(&message).target {
-            MessageTarget::Broadcast => self.flood_message(None, &message).await,
-            MessageTarget::Device { device_id } if device_id == self.device_id => Ok(()),
-            MessageTarget::Device { device_id } => {
-                if !self.forward_direct_message(device_id, &message).await? {
-                    self.start_route_discovery(device_id, DEFAULT_ROUTE_TTL)
-                        .await?;
-                }
-                Ok(())
-            }
-        }
+    async fn answer_route_request(
+        &self,
+        neighbor_id: NeighborId,
+        header: &MessageHeader,
+        payload: &crate::RouteDiscoveryRequestPayload,
+    ) -> Result<(), NetworkError> {
+        let path = append_device(payload.path.clone(), self.device_id);
+        let response = Message::RouteDiscoveryResponse {
+            header: MessageHeader {
+                message_id: MessageId::new(),
+                group_id: self.group_id,
+                source_device_id: self.device_id,
+                target: MessageTarget::Device {
+                    device_id: header.source_device_id,
+                },
+                ttl: DEFAULT_ROUTE_TTL.max(path.len() as u8),
+                hop_count: 0,
+                timestamp_ms: now_timestamp_ms(),
+            },
+            payload: crate::RouteDiscoveryResponsePayload {
+                request_message_id: header.message_id,
+                path,
+            },
+        };
+        self.send_message(neighbor_id, response).await?;
+        Ok(())
     }
 
     async fn handle_received_message(
@@ -701,12 +716,18 @@ impl SessionInner {
             self.note_neighbor_device(neighbor_id, header.source_device_id)
                 .await;
         }
-        self.store_route(
-            header.source_device_id,
-            neighbor_id,
-            vec![self.device_id, header.source_device_id],
-        )
-        .await;
+        #[cfg(feature = "relay")]
+        if self.role == DeviceRole::Relay
+            || header.hop_count == 0
+            || !matches!(message, Message::MemberChanged { .. })
+        {
+            self.store_route(
+                header.source_device_id,
+                neighbor_id,
+                vec![self.device_id, header.source_device_id],
+            )
+            .await;
+        }
         match message {
             Message::MemberChanged { payload, .. } => {
                 self.apply_member_change(
@@ -715,15 +736,28 @@ impl SessionInner {
                     payload.nickname_updated.then(|| payload.nickname.clone()),
                 )
                 .await;
+                #[cfg(feature = "relay")]
+                if self.role == DeviceRole::Relay && header.source_device_id == payload.device_id {
+                    self.flood_message(Some(neighbor_id), message).await?;
+                }
             }
+            Message::RouteDiscoveryRequest { header, payload }
+                if payload.target_device_id == self.device_id =>
+            {
+                self.answer_route_request(neighbor_id, header, payload)
+                    .await?;
+            }
+            #[cfg(feature = "relay")]
             Message::RouteDiscoveryRequest { header, payload } => {
                 self.handle_route_discovery_request(neighbor_id, header, payload)
                     .await?;
             }
+            #[cfg(feature = "relay")]
             Message::RouteDiscoveryResponse { header, payload } => {
                 self.handle_route_discovery_response(header, payload)
                     .await?;
             }
+            #[cfg(feature = "relay")]
             _ => match header.target {
                 MessageTarget::Broadcast => self.flood_message(Some(neighbor_id), message).await?,
                 MessageTarget::Device { device_id } if device_id == self.device_id => {}
@@ -731,197 +765,10 @@ impl SessionInner {
                     let _ = self.forward_direct_message(device_id, message).await?;
                 }
             },
+            #[cfg(not(feature = "relay"))]
+            _ => {}
         }
         Ok(())
-    }
-
-    async fn flood_message(
-        &self,
-        except: Option<NeighborId>,
-        message: &Message,
-    ) -> Result<(), NetworkError> {
-        let Some(message) = next_hop_message(message) else {
-            return Ok(());
-        };
-        self.send_except(except, message).await
-    }
-
-    async fn forward_direct_message(
-        &self,
-        target_device_id: DeviceId,
-        message: &Message,
-    ) -> Result<bool, NetworkError> {
-        let next_hop = self
-            .routes
-            .lock()
-            .await
-            .get(&target_device_id)
-            .map(|route| route.next_hop);
-        let Some(next_hop) = next_hop else {
-            return Ok(false);
-        };
-        let Some(message) = next_hop_message(message) else {
-            return Ok(true);
-        };
-        if self.send_message(next_hop, message).await.is_err() {
-            self.routes.lock().await.remove(&target_device_id);
-            return Ok(false);
-        }
-        Ok(true)
-    }
-
-    async fn start_route_discovery(
-        &self,
-        target_device_id: DeviceId,
-        ttl: u8,
-    ) -> Result<MessageId, NetworkError> {
-        let message_id = MessageId::new();
-        let message = Message::RouteDiscoveryRequest {
-            header: MessageHeader {
-                message_id,
-                group_id: self.group_id,
-                source_device_id: self.device_id,
-                target: MessageTarget::Device {
-                    device_id: target_device_id,
-                },
-                ttl,
-                hop_count: 0,
-                timestamp_ms: now_timestamp_ms(),
-            },
-            payload: RouteDiscoveryRequestPayload {
-                target_device_id,
-                path: vec![self.device_id],
-            },
-        };
-        self.mark_seen(message_id).await;
-        self.flood_message(None, &message).await?;
-        Ok(message_id)
-    }
-
-    async fn handle_route_discovery_request(
-        &self,
-        neighbor_id: NeighborId,
-        header: &MessageHeader,
-        payload: &RouteDiscoveryRequestPayload,
-    ) -> Result<(), NetworkError> {
-        let path = append_device(payload.path.clone(), self.device_id);
-        if payload.target_device_id == self.device_id {
-            let response = Message::RouteDiscoveryResponse {
-                header: MessageHeader {
-                    message_id: MessageId::new(),
-                    group_id: self.group_id,
-                    source_device_id: self.device_id,
-                    target: MessageTarget::Device {
-                        device_id: header.source_device_id,
-                    },
-                    ttl: DEFAULT_ROUTE_TTL.max(path.len() as u8),
-                    hop_count: 0,
-                    timestamp_ms: now_timestamp_ms(),
-                },
-                payload: RouteDiscoveryResponsePayload {
-                    request_message_id: header.message_id,
-                    path,
-                },
-            };
-            self.send_message(neighbor_id, response).await?;
-            return Ok(());
-        }
-
-        self.reverse_routes.lock().await.insert(
-            header.message_id,
-            ReverseRouteEntry {
-                neighbor_id,
-                created_at: Instant::now(),
-            },
-        );
-        let mut forwarded = Message::RouteDiscoveryRequest {
-            header: header.clone(),
-            payload: RouteDiscoveryRequestPayload {
-                target_device_id: payload.target_device_id,
-                path,
-            },
-        };
-        message_header_mut(&mut forwarded).hop_count = header.hop_count;
-        self.flood_message(Some(neighbor_id), &forwarded).await
-    }
-
-    async fn handle_route_discovery_response(
-        &self,
-        header: &MessageHeader,
-        payload: &RouteDiscoveryResponsePayload,
-    ) -> Result<(), NetworkError> {
-        self.store_route(
-            header.source_device_id,
-            self.next_hop_from_path(payload.path.as_slice()).await?,
-            payload.path.clone(),
-        )
-        .await;
-        if let MessageTarget::Device { device_id } = header.target {
-            if device_id == self.device_id {
-                return Ok(());
-            }
-        }
-        if let Some(reverse) = self
-            .reverse_routes
-            .lock()
-            .await
-            .remove(&payload.request_message_id)
-        {
-            let message = Message::RouteDiscoveryResponse {
-                header: header.clone(),
-                payload: payload.clone(),
-            };
-            if let Some(message) = next_hop_message(&message) {
-                self.send_message(reverse.neighbor_id, message).await?;
-            }
-        }
-        Ok(())
-    }
-
-    async fn next_hop_from_path(&self, path: &[DeviceId]) -> Result<NeighborId, NetworkError> {
-        let neighbors = self.neighbors.lock().await;
-        for window in path.windows(2) {
-            if window[0] == self.device_id {
-                if let Some((neighbor_id, _)) = neighbors
-                    .iter()
-                    .find(|(_, neighbor)| neighbor.device_id == Some(window[1]))
-                {
-                    return Ok(*neighbor_id);
-                }
-            }
-        }
-        self.routes
-            .lock()
-            .await
-            .get(path.last().unwrap_or(&self.device_id))
-            .map(|route| route.next_hop)
-            .ok_or(NetworkError::ChannelClosed)
-    }
-
-    async fn store_route(
-        &self,
-        target_device_id: DeviceId,
-        next_hop: NeighborId,
-        path: Vec<DeviceId>,
-    ) {
-        if target_device_id == self.device_id {
-            return;
-        }
-        self.routes.lock().await.insert(
-            target_device_id,
-            RouteEntry {
-                next_hop,
-                path,
-                updated_at: Instant::now(),
-            },
-        );
-    }
-
-    async fn remove_routes_for_device(&self, device_id: DeviceId) {
-        self.routes
-            .lock()
-            .await
-            .retain(|target, route| *target != device_id && !route.path.contains(&device_id));
     }
 
     async fn apply_member_change(
@@ -942,13 +789,14 @@ impl SessionInner {
             member.nickname = nickname;
         }
         drop(members);
+        #[cfg(feature = "relay")]
         if change == MemberChange::Offline {
             self.remove_routes_for_device(device_id).await;
         }
     }
 
     async fn note_neighbor_device(&self, neighbor_id: NeighborId, device_id: DeviceId) {
-        let newly_identified = self
+        let _newly_identified = self
             .neighbors
             .lock()
             .await
@@ -963,35 +811,9 @@ impl SessionInner {
             });
         self.apply_member_change(device_id, MemberChange::Online, None)
             .await;
-        if newly_identified {
+        #[cfg(feature = "relay")]
+        if _newly_identified {
             self.sync_members_to_neighbor(neighbor_id).await;
-        }
-    }
-
-    async fn sync_members_to_neighbor(&self, neighbor_id: NeighborId) {
-        let members: Vec<_> = self
-            .members
-            .lock()
-            .await
-            .iter()
-            .map(|(device_id, member)| (*device_id, member.online, member.nickname.clone()))
-            .collect();
-        for (device_id, online, nickname) in members {
-            let change = if online {
-                MemberChange::Online
-            } else {
-                MemberChange::Offline
-            };
-            if self
-                .send_message(
-                    neighbor_id,
-                    member_changed_message(self, device_id, change, Some(nickname)),
-                )
-                .await
-                .is_err()
-            {
-                return;
-            }
         }
     }
 
@@ -1008,6 +830,7 @@ impl SessionInner {
             if let Some(device_id) = neighbor.device_id {
                 self.apply_member_change(device_id, MemberChange::Offline, None)
                     .await;
+                #[cfg(feature = "relay")]
                 self.remove_routes_for_device(device_id).await;
                 let _ = self
                     .broadcast_message(member_changed_message(
@@ -1018,168 +841,17 @@ impl SessionInner {
                     ))
                     .await;
             }
+            #[cfg(feature = "relay")]
             self.routes
                 .lock()
                 .await
                 .retain(|_, route| route.next_hop != neighbor_id);
+            #[cfg(feature = "relay")]
             self.reverse_routes
                 .lock()
                 .await
                 .retain(|_, route| route.neighbor_id != neighbor_id);
         }
-    }
-}
-
-async fn accept_loop(session: Arc<SessionInner>, listener: TcpListener) {
-    let mut shutdown = session.shutdown.subscribe();
-    loop {
-        tokio::select! {
-            accepted = listener.accept() => {
-                let Ok((stream, _)) = accepted else {
-                    return;
-                };
-                let _ = session.register_neighbor(stream).await;
-            }
-            _ = shutdown.recv() => return,
-        }
-    }
-}
-
-async fn connect_stream(
-    peer_addr: SocketAddr,
-    local_ip: Option<IpAddr>,
-) -> Result<TcpStream, io::Error> {
-    let Some(local_ip) = local_ip else {
-        return TcpStream::connect(peer_addr).await;
-    };
-
-    let socket = match local_ip {
-        IpAddr::V4(_) => TcpSocket::new_v4()?,
-        IpAddr::V6(_) => TcpSocket::new_v6()?,
-    };
-    socket.bind(SocketAddr::new(local_ip, 0))?;
-    socket.connect(peer_addr).await
-}
-
-async fn read_loop(
-    session: Arc<SessionInner>,
-    neighbor_id: NeighborId,
-    mut reader: OwnedReadHalf,
-    last_active: Arc<Mutex<Instant>>,
-) {
-    loop {
-        match read_message_frame(&mut reader).await {
-            Ok(message) => {
-                *last_active.lock().await = Instant::now();
-                let header = message_header(&message);
-                if header.group_id != session.group_id {
-                    continue;
-                }
-                if !session.mark_seen(header.message_id).await {
-                    continue;
-                }
-                let _ = session.handle_received_message(neighbor_id, &message).await;
-                let _ = session.events.send(SessionEvent::MessageReceived {
-                    neighbor_id,
-                    message,
-                });
-            }
-            Err(_) => {
-                session.remove_neighbor(neighbor_id).await;
-                return;
-            }
-        }
-    }
-}
-
-async fn write_loop(mut writer: OwnedWriteHalf, mut receiver: mpsc::UnboundedReceiver<Message>) {
-    while let Some(message) = receiver.recv().await {
-        if write_message_frame(&mut writer, &message).await.is_err() {
-            return;
-        }
-    }
-}
-
-async fn heartbeat_loop(session: Arc<SessionInner>, neighbor_id: NeighborId) {
-    let mut interval = time::interval(session.config.heartbeat_interval);
-    let mut shutdown = session.shutdown.subscribe();
-    loop {
-        tokio::select! {
-            _ = interval.tick() => {}
-            _ = shutdown.recv() => return,
-        }
-        if session
-            .send_message(neighbor_id, heartbeat_message(&session))
-            .await
-            .is_err()
-        {
-            session.remove_neighbor(neighbor_id).await;
-            return;
-        }
-    }
-}
-
-async fn timeout_loop(session: Arc<SessionInner>) {
-    let mut interval = time::interval(session.config.timeout_check_interval);
-    let mut shutdown = session.shutdown.subscribe();
-    loop {
-        tokio::select! {
-            _ = interval.tick() => {}
-            _ = shutdown.recv() => return,
-        }
-        let mut timed_out = Vec::new();
-        {
-            let neighbors = session.neighbors.lock().await;
-            for (neighbor_id, neighbor) in neighbors.iter() {
-                if neighbor.last_active.lock().await.elapsed() > session.config.heartbeat_timeout {
-                    timed_out.push(*neighbor_id);
-                }
-            }
-        }
-        for neighbor_id in timed_out {
-            session.remove_neighbor(neighbor_id).await;
-        }
-    }
-}
-
-async fn dedup_cleanup_loop(session: Arc<SessionInner>) {
-    let mut interval = time::interval(MESSAGE_ID_CLEANUP_INTERVAL);
-    let mut shutdown = session.shutdown.subscribe();
-    loop {
-        tokio::select! {
-            _ = interval.tick() => {}
-            _ = shutdown.recv() => return,
-        }
-        session.cleanup_seen_messages().await;
-    }
-}
-
-async fn leaf_reconnect_loop(session: Arc<SessionInner>) {
-    let mut delay = session.config.reconnect_initial_delay;
-    let mut shutdown = session.shutdown.subscribe();
-    loop {
-        tokio::select! {
-            _ = time::sleep(delay) => {}
-            _ = shutdown.recv() => return,
-        }
-        if !session.neighbors.lock().await.is_empty() {
-            delay = session.config.reconnect_initial_delay;
-            continue;
-        }
-
-        let target = session.leaf_reconnect_target.lock().await.clone();
-        let Some(target) = target else {
-            delay = session.config.reconnect_initial_delay;
-            continue;
-        };
-
-        if let Ok(stream) = connect_stream(target.peer_addr, target.local_ip).await {
-            let _ = Box::pin(session.register_neighbor(stream)).await;
-            delay = session.config.reconnect_initial_delay;
-            continue;
-        }
-
-        delay = (delay * 2).min(session.config.reconnect_max_delay);
     }
 }
 
@@ -1194,36 +866,6 @@ fn message_header(message: &Message) -> &MessageHeader {
         | Message::RouteDiscoveryRequest { header, .. }
         | Message::RouteDiscoveryResponse { header, .. } => header,
     }
-}
-
-fn message_header_mut(message: &mut Message) -> &mut MessageHeader {
-    match message {
-        Message::Text { header, .. }
-        | Message::FileChunk { header, .. }
-        | Message::FileResumeRequest { header, .. }
-        | Message::UpdatePackage { header, .. }
-        | Message::Heartbeat { header, .. }
-        | Message::MemberChanged { header, .. }
-        | Message::RouteDiscoveryRequest { header, .. }
-        | Message::RouteDiscoveryResponse { header, .. } => header,
-    }
-}
-
-fn next_hop_message(message: &Message) -> Option<Message> {
-    let header = message_header(message);
-    if header.hop_count >= header.ttl {
-        return None;
-    }
-    let mut message = message.clone();
-    message_header_mut(&mut message).hop_count += 1;
-    Some(message)
-}
-
-fn append_device(mut path: Vec<DeviceId>, device_id: DeviceId) -> Vec<DeviceId> {
-    if path.last() != Some(&device_id) {
-        path.push(device_id);
-    }
-    path
 }
 
 fn heartbeat_message(session: &SessionInner) -> Message {
@@ -1325,5 +967,12 @@ async fn collect_relay_announcements(
     }
 }
 
-#[cfg(test)]
+fn append_device(mut path: Vec<DeviceId>, device_id: DeviceId) -> Vec<DeviceId> {
+    if path.last() != Some(&device_id) {
+        path.push(device_id);
+    }
+    path
+}
+
+#[cfg(all(test, feature = "relay"))]
 mod tests;
