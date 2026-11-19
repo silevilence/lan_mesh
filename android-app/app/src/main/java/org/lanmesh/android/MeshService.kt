@@ -38,9 +38,26 @@ class MeshService : Service() {
     private val current = MutableStateFlow<Map<UUID, GroupView>>(emptyMap())
     internal val groups = current.asStateFlow()
     private var foreground = false
+    private lateinit var monitor: MeshNetwork
+    private val currentNetwork = MutableStateFlow("正在获取网络状态")
+    internal val network = currentNetwork.asStateFlow()
 
     override fun onCreate() {
         super.onCreate()
+        monitor = MeshNetwork(this) { route ->
+            currentNetwork.value = route.transport
+            for ((id, runtime) in runtimes) {
+                val session = runtime.session ?: continue
+                change(id) { it.copy(online = false) }
+                scope.launch {
+                    try { session.reconnect() }
+                    catch (e: Exception) {
+                        if (runtimes[id] === runtime) change(id) { it.copy(error = e.localizedMessage) }
+                    }
+                }
+            }
+        }
+        monitor.start()
         getSystemService(NotificationManager::class.java).createNotificationChannel(
             NotificationChannel(CHANNEL, "群组连接", NotificationManager.IMPORTANCE_LOW)
         )
@@ -61,7 +78,7 @@ class MeshService : Service() {
 
     override fun onBind(intent: Intent): IBinder = binder
 
-    internal suspend fun discover(): List<FoundRelay> = MeshSession.discover()
+    internal suspend fun discover(): List<FoundRelay> = monitor.discover()
 
     internal fun join(relay: FoundRelay, nickname: String): UUID {
         val previous = runtimes[relay.group]?.config
@@ -262,6 +279,7 @@ class MeshService : Service() {
     }
 
     override fun onDestroy() {
+        monitor.close()
         runtimes.keys.toList().forEach(::detach)
         scope.cancel()
         super.onDestroy()

@@ -31,6 +31,7 @@ import java.util.UUID
 internal fun MeshApp(service: MeshService, batteryRestricted: Boolean, batterySettings: () -> Unit,
     requestNotifications: () -> Unit) {
     val groups by service.groups.collectAsStateWithLifecycle()
+    val network by service.network.collectAsStateWithLifecycle()
     var page by rememberSaveable { mutableStateOf("home") }
     var selected by rememberSaveable { mutableStateOf<String?>(null) }
     val group = selected?.let { groups[UUID.fromString(it)] }
@@ -72,7 +73,11 @@ internal fun MeshApp(service: MeshService, batteryRestricted: Boolean, batterySe
                                 }
                             }
                         }
-                        if (batteryRestricted) BatterySettings(batterySettings)
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text(network, style = MaterialTheme.typography.labelLarge)
+                            if (batteryRestricted) BatterySettings(batterySettings)
+                        }
                     }
                 }
             }
@@ -181,6 +186,7 @@ private fun JoinScreen(service: MeshService, back: () -> Unit, join: (FoundRelay
 
 @Composable
 private fun GroupScreen(service: MeshService, group: GroupView, back: () -> Unit, leave: () -> Unit) {
+    val network by service.network.collectAsStateWithLifecycle()
     var confirm by remember { mutableStateOf(false) }
     var members by rememberSaveable { mutableStateOf(false) }
     var direct by rememberSaveable { mutableStateOf<String?>(null) }
@@ -195,7 +201,7 @@ private fun GroupScreen(service: MeshService, group: GroupView, back: () -> Unit
     ScreenTitle(group.config.name, back) {
         TextButton(onClick = { confirm = true }) { Text("退出群组") }
     }
-    Text("${status(group)} · ${group.config.address}", style = MaterialTheme.typography.bodyMedium,
+    Text("${status(group)} · $network · ${group.config.address}", style = MaterialTheme.typography.bodyMedium,
         color = MaterialTheme.colorScheme.onSurfaceVariant)
     group.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
     TabRow(selectedTabIndex = if (members) 1 else 0) {
