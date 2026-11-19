@@ -34,9 +34,9 @@
 ```
 /                       # workspace 根,仅包含 Cargo.toml(workspace 容器)与本文件
 ├── core/               # 核心通信库(lib crate),网络/协议/路由/文件传输逻辑,不含任何UI代码
-├── core-ffi/           # 供 Android JNI 绑定使用的 FFI 适配层(当前为占位 crate,尚未实现)
+├── core-ffi/           # Android Leaf 专用 JNI 绑定、事件与文件适配
 ├── tauri-app/          # Windows 客户端(Tauri 2 壳 + 原生 JS 前端),已完成
-└── android-app/        # Android 客户端(Kotlin + Compose),规划中,尚未创建
+└── android-app/        # Android 客户端(Kotlin + Compose),单一前台服务运行多组 Leaf 会话
 ```
 
 ## 通用规则
@@ -207,9 +207,11 @@ cd tauri-app && cargo tauri build
 # Windows 客户端瘦身发布构建(NSIS, opt-level=z / LTO / strip)
 cd tauri-app && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dist.ps1
 
-# Android 端 Rust 交叉编译产物生成(供 JNI 加载)
-# 注意:core-ffi 当前为占位 crate,此命令需待任务19实现 FFI 接口后才有意义
-cd core-ffi && cargo build --release --target <android-target>
+# Android 构建、JVM 测试与 lint（Gradle 自动编译 ARM64 / x86_64 JNI 库）
+cd android-app && ./gradlew assembleDebug testDebugUnitTest lintDebug
+
+# 单独验证 Leaf 构建与 JNI 适配
+cargo test -p core-ffi
 ```
 
 ## 测试规范

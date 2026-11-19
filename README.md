@@ -16,7 +16,7 @@
 - **托盘驻留与桌面通知**：关闭或最小化窗口时驻留系统托盘继续运行，可通过托盘菜单打开主界面或退出；窗口隐藏期间收到的新消息会弹出 Windows 桌面通知，点击通知直接回到主界面。两项行为均可在配置页开关。
 - **离线分发**：Windows 端可打包为 NSIS 单文件安装程序，体积经 LTO 与符号裁剪优化。
 
-> Android 客户端尚在规划中，当前仅提供 Windows 客户端。
+Android 客户端以 Leaf 身份加入已有群组。一个前台服务同时维护多个群组，支持发现与手动加入、成员列表、群聊、私聊和文件收发。更新安装包与托盘功能属于 Windows 客户端。
 
 ## 前置条件
 
@@ -34,6 +34,22 @@ cargo tauri dev
 ```
 
 启动后在界面中：选择网卡 → 创建群组（或发现并加入已有群组）→ 即可开始群聊/单聊与文件传输。
+
+## Android 客户端
+
+支持 Android 8.0（API 26）及以上的 ARM64 和 x86_64 设备。构建使用 JDK 17、Android SDK Platform 35、Build Tools 35.0.0、NDK 27.2.12479018，以及 Rust 的 `aarch64-linux-android` 和 `x86_64-linux-android` 目标。将 `JAVA_HOME` 和 `ANDROID_HOME` 指向已有安装。Gradle wrapper 会为两种架构编译并打包 JNI 库。
+
+```powershell
+cd android-app
+.\gradlew.bat assembleDebug
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+```
+
+在 Windows 客户端创建群组，手机连上同一局域网，打开“加入群组”。可从“附近群组”选择，或在“手动加入”中输入中继 IP 和 TCP 端口。进入“成员”并点选对方即可私聊。连接通知显示在线群组数，退到桌面后前台服务继续收信；退出最后一个群组会停止连接服务。
+
+选择“发送文件”后由系统授予所选文档的读取权限。接收文件经 SHA256 校验后，在消息气泡中点“另存为”选择保存位置。群组身份与中继地址可在重启后恢复；聊天记录、续传状态和待导出文件只在本次会话中可用。
+
+Windows 中继与 Android 模拟器的自动化互通测试见[互通验收说明](android-app/acceptance/README.md)。
 
 ## 构建与生产运行
 
@@ -55,6 +71,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dist.ps1
 
 ```bash
 cargo test -p core
+cargo test -p core-ffi
 cargo test -p lan-mesh-tauri
 ```
 
@@ -65,7 +82,8 @@ lan_mesh/
 ├── Cargo.toml              # workspace 容器（声明 core / core-ffi / tauri-app）
 ├── core/                   # 核心通信库（网络 / 协议 / 路由 / 文件传输，不含 UI）
 │   └── src/                # protocol.rs / frame.rs / session.rs / file_transfer.rs
-├── core-ffi/               # Android FFI 适配层（占位，尚未实现）
+├── core-ffi/               # Android Leaf JNI 绑定、事件与文件适配
+├── android-app/            # Android 客户端（Kotlin / Compose / 前台服务）
 ├── tauri-app/              # Windows 客户端
 │   ├── index.html          # 前端入口
 │   ├── src/main.js         # 前端逻辑（原生 JS，无框架）
