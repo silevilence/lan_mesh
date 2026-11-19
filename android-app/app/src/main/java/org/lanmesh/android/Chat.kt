@@ -26,7 +26,9 @@ internal data class ChatEntry(
     val text: String,
     val time: Long = System.currentTimeMillis(),
     val file: Boolean = false,
-    val state: String = ""
+    val state: String = "",
+    val percent: Int? = null,
+    val path: String? = null
 )
 
 internal fun List<ChatEntry>.conversation(peer: UUID?) = filter { it.peer == peer }
@@ -36,6 +38,12 @@ internal fun ChatPane(service: MeshService, group: GroupView, peer: UUID?) {
     var draft by rememberSaveable(group.config.groupId.toString(), peer?.toString()) { mutableStateOf("") }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) service.sendFile(group.config.groupId, peer, uri)
+    }
+    var exporting by rememberSaveable { mutableStateOf<String?>(null) }
+    val destination = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
+        val row = exporting?.let(UUID::fromString)
+        if (row != null && uri != null) service.exportFile(group.config.groupId, row, uri)
+        exporting = null
     }
     val focus = LocalFocusManager.current
     val entries = remember(group.messages, peer) { group.messages.conversation(peer).asReversed() }
@@ -48,7 +56,12 @@ internal fun ChatPane(service: MeshService, group: GroupView, peer: UUID?) {
             Text("暂无消息", color = MaterialTheme.colorScheme.onSurfaceVariant)
         } else LazyColumn(Modifier.fillMaxWidth().weight(1f), state = scroll, reverseLayout = true,
             contentPadding = PaddingValues(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            items(entries, key = { it.id.toString() }) { entry -> MessageBubble(entry) }
+            items(entries, key = { it.id.toString() }) { entry ->
+                MessageBubble(entry, group.online, save = {
+                    exporting = entry.id.toString()
+                    destination.launch(entry.text.substringAfterLast('/').substringAfterLast('\\').ifBlank { "文件" })
+                }, resume = { service.resumeFile(group.config.groupId, entry.id) })
+            }
         }
         HorizontalDivider()
         OutlinedTextField(draft, { draft = it }, Modifier.fillMaxWidth().padding(top = 8.dp),
@@ -66,7 +79,7 @@ internal fun ChatPane(service: MeshService, group: GroupView, peer: UUID?) {
 }
 
 @Composable
-private fun MessageBubble(entry: ChatEntry) {
+private fun MessageBubble(entry: ChatEntry, online: Boolean, save: () -> Unit, resume: () -> Unit) {
     val colors = MaterialTheme.colorScheme
     val clock = remember { DateFormat.getTimeInstance(DateFormat.SHORT) }
     Column(Modifier.fillMaxWidth(), horizontalAlignment = if (entry.own) Alignment.End else Alignment.Start) {
@@ -78,7 +91,15 @@ private fun MessageBubble(entry: ChatEntry) {
             Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
                 if (entry.file) Text("文件", style = MaterialTheme.typography.labelSmall)
                 Text(entry.text, style = MaterialTheme.typography.bodyLarge)
-                if (entry.state.isNotBlank()) Text(entry.state, style = MaterialTheme.typography.labelSmall)
+                if (entry.file && entry.percent != null) {
+                    LinearProgressIndicator(progress = { entry.percent / 100f }, modifier = Modifier.width(160.dp).padding(vertical = 6.dp))
+                }
+                if (entry.state.isNotBlank()) Text(listOfNotNull(entry.state, entry.percent?.let { "$it%" }).joinToString(" · "),
+                    style = MaterialTheme.typography.labelSmall)
+                if (entry.path != null) TextButton(onClick = save) { Text("另存为") }
+                else if (!entry.own && online && entry.state in listOf("接收中", "等待续传")) {
+                    TextButton(onClick = resume) { Text("请求续传") }
+                }
             }
         }
     }

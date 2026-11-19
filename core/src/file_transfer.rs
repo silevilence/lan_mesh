@@ -97,7 +97,7 @@ impl FileChunkReader {
             total_size,
             sha256,
             next_chunk_index: 0,
-            chunk_count: chunk_count(total_size),
+            chunk_count: chunk_count(total_size)?,
         })
     }
 
@@ -122,6 +122,22 @@ impl FileChunkReader {
     pub fn with_sender_nickname(mut self, sender_nickname: Option<String>) -> Self {
         self.sender_nickname = sender_nickname;
         self
+    }
+
+    pub async fn message_at(&mut self, index: u32) -> Result<Message, FileTransferError> {
+        if index >= self.chunk_count {
+            return Err(FileTransferError::ChunkOutOfRange {
+                chunk_index: index,
+                chunk_count: self.chunk_count,
+            });
+        }
+        self.file
+            .seek(SeekFrom::Start(chunk_offset(index)?))
+            .await?;
+        self.next_chunk_index = index;
+        self.next_message()
+            .await?
+            .ok_or(FileTransferError::InvalidChunk("chunk missing"))
     }
 
     pub async fn next_message(&mut self) -> Result<Option<Message>, FileTransferError> {
@@ -161,49 +177,27 @@ pub async fn resend_file_chunks(
     target: MessageTarget,
     ttl: u8,
 ) -> Result<Vec<Message>, FileTransferError> {
-    let path = path.as_ref();
-    let total_size = tokio::fs::metadata(path).await?.len();
-    let chunk_count = chunk_count(total_size);
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("received-file")
-        .to_string();
-    let sha256 = sha256_file(path).await?;
-    let mut file = File::open(path).await?;
+    let mut reader = FileChunkReader::open(
+        path,
+        request.file_id,
+        group_id,
+        source_device_id,
+        target,
+        ttl,
+    )
+    .await?;
     let mut messages = Vec::with_capacity(request.missing_chunks.len());
-
-    for &chunk_index in &request.missing_chunks {
-        if chunk_index >= chunk_count {
-            return Err(FileTransferError::ChunkOutOfRange {
-                chunk_index,
-                chunk_count,
-            });
-        }
-        let expected_len = expected_chunk_len(chunk_index, total_size)?;
-        file.seek(SeekFrom::Start(chunk_offset(chunk_index)?))
-            .await?;
-        let mut data = vec![0; expected_len];
-        if expected_len > 0 {
-            file.read_exact(&mut data).await?;
-        }
-        messages.push(file_chunk_message(
-            request.file_id,
-            chunk_index,
-            chunk_count,
-            total_size,
-            file_name.clone(),
-            None,
-            sha256.clone(),
-            data,
-            group_id,
-            source_device_id,
-            target.clone(),
-            ttl,
-        ));
+    for &index in &request.missing_chunks {
+        messages.push(reader.message_at(index).await?);
     }
-
     Ok(messages)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FileWriteStatus {
+    Incomplete { received: u32 },
+    Complete { path: PathBuf },
+    HashMismatch { expected: String, actual: String },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -231,7 +225,7 @@ impl FileAssembler {
         total_size: u64,
         sha256: impl Into<String>,
     ) -> Result<Self, FileTransferError> {
-        if chunk_count == 0 || chunk_count != self::chunk_count(total_size) {
+        if chunk_count == 0 || chunk_count != self::chunk_count(total_size)? {
             return Err(FileTransferError::InvalidChunk("bad chunk count"));
         }
         let path = path.into();
@@ -259,15 +253,33 @@ impl FileAssembler {
     }
 
     pub fn missing_chunks(&self) -> Vec<u32> {
-        (0..self.chunk_count)
-            .filter(|index| !self.received_chunks.contains(index))
-            .collect()
+        self.missing_indices().collect()
+    }
+
+    pub fn missing_indices(&self) -> impl Iterator<Item = u32> + '_ {
+        (0..self.chunk_count).filter(|index| !self.received_chunks.contains(index))
     }
 
     pub async fn push_chunk(
         &mut self,
         chunk: &FileChunkPayload,
     ) -> Result<FileAssemblyStatus, FileTransferError> {
+        Ok(match self.write_chunk(chunk).await? {
+            FileWriteStatus::Incomplete { .. } => FileAssemblyStatus::Incomplete {
+                missing_chunks: self.missing_chunks(),
+            },
+            FileWriteStatus::Complete { path } => FileAssemblyStatus::Complete { path },
+            FileWriteStatus::HashMismatch { expected, actual } => {
+                FileAssemblyStatus::HashMismatch { expected, actual }
+            }
+        })
+    }
+
+    /// Store a chunk without enumerating the entire missing list on each write.
+    pub async fn write_chunk(
+        &mut self,
+        chunk: &FileChunkPayload,
+    ) -> Result<FileWriteStatus, FileTransferError> {
         self.validate_chunk(chunk)?;
         self.file
             .seek(SeekFrom::Start(chunk_offset(chunk.chunk_index)?))
@@ -275,19 +287,19 @@ impl FileAssembler {
         self.file.write_all(&chunk.data).await?;
         self.received_chunks.insert(chunk.chunk_index);
 
-        let missing_chunks = self.missing_chunks();
-        if !missing_chunks.is_empty() {
-            return Ok(FileAssemblyStatus::Incomplete { missing_chunks });
+        let received = self.received_chunks.len() as u32;
+        if received < self.chunk_count {
+            return Ok(FileWriteStatus::Incomplete { received });
         }
 
         self.file.flush().await?;
         let actual = sha256_file(&self.path).await?;
         if actual == self.sha256 {
-            Ok(FileAssemblyStatus::Complete {
+            Ok(FileWriteStatus::Complete {
                 path: self.path.clone(),
             })
         } else {
-            Ok(FileAssemblyStatus::HashMismatch {
+            Ok(FileWriteStatus::HashMismatch {
                 expected: self.sha256.clone(),
                 actual,
             })
@@ -444,9 +456,10 @@ fn file_chunk_message(
     }
 }
 
-fn chunk_count(total_size: u64) -> u32 {
+fn chunk_count(total_size: u64) -> Result<u32, FileTransferError> {
     let count = total_size.div_ceil(FILE_CHUNK_SIZE as u64).max(1);
-    u32::try_from(count).expect("file is too large for u32 chunk indexes")
+    u32::try_from(count)
+        .map_err(|_| FileTransferError::InvalidChunk("file exceeds chunk index range"))
 }
 
 fn expected_chunk_len(chunk_index: u32, total_size: u64) -> Result<usize, FileTransferError> {
@@ -454,7 +467,7 @@ fn expected_chunk_len(chunk_index: u32, total_size: u64) -> Result<usize, FileTr
     if offset > total_size {
         return Err(FileTransferError::ChunkOutOfRange {
             chunk_index,
-            chunk_count: chunk_count(total_size),
+            chunk_count: chunk_count(total_size)?,
         });
     }
     Ok((total_size - offset).min(FILE_CHUNK_SIZE as u64) as usize)

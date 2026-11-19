@@ -91,7 +91,7 @@ class MeshService : Service() {
             // Opening registers a native handle. A close or replacement during open must reclaim it.
             try {
                 withContext(NonCancellable) {
-                    val session = MeshSession.open(config) { raw ->
+                    val session = MeshSession.open(config, cacheDir) { raw ->
                         scope.launch {
                             if (runtimes[id] === runtime) event(runtime, JSONObject(raw))
                         }
@@ -114,6 +114,18 @@ class MeshService : Service() {
                 change(id) { it.copy(online = event.getBoolean("online"), error = null) }
                 refreshMembers(runtime)
                 updateNotification()
+            }
+            "sent" -> editMessage(id, UUID.fromString(event.getString("id"))) { it.copy(percent = event.getInt("percent")) }
+            "received" -> {
+                val source = event.getString("source")
+                val row = ChatEntry(UUID.fromString(event.getString("id")), event.nullableString("peer")?.let(UUID::fromString),
+                    false, event.nullableString("sender") ?: source.take(8), event.getString("name"), event.getLong("time"),
+                    file = true, state = event.getString("state"), percent = event.getInt("percent"), path = event.nullableString("path"))
+                change(id) { view ->
+                    val index = view.messages.indexOfFirst { it.id == row.id }
+                    val entries = if (index < 0) view.messages + row else view.messages.toMutableList().also { it[index] = row }
+                    view.copy(messages = entries)
+                }
             }
             "text" -> {
                 val source = UUID.fromString(event.getString("source"))
@@ -174,6 +186,34 @@ class MeshService : Service() {
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) { "发送失败：${e.localizedMessage}" }
             if (runtimes[id] === runtime) editMessage(id, entry.id) { it.copy(state = state) }
+        }
+    }
+
+    internal fun resumeFile(group: UUID, row: UUID) {
+        val runtime = runtimes[group] ?: return
+        val session = runtime.session ?: return
+        scope.launch {
+            try { session.resume(row) }
+            catch (e: Exception) {
+                if (runtimes[group] === runtime) change(group) { it.copy(error = e.localizedMessage) }
+            }
+        }
+    }
+
+    internal fun exportFile(group: UUID, row: UUID, destination: android.net.Uri) {
+        val runtime = runtimes[group] ?: return
+        val path = current.value[group]?.messages?.find { it.id == row }?.path ?: return
+        scope.launch {
+            val result = try {
+                withContext(Dispatchers.IO) {
+                    java.io.File(path).inputStream().use { input ->
+                        val output = contentResolver.openOutputStream(destination, "wt") ?: error("无法写入所选位置")
+                        output.use { input.copyTo(it) }
+                    }
+                }
+                "已保存"
+            } catch (e: Exception) { "保存失败：" + e.localizedMessage }
+            if (runtimes[group] === runtime) editMessage(group, row) { it.copy(state = result) }
         }
     }
 

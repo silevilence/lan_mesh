@@ -1,11 +1,14 @@
-use crate::Result;
+use crate::{
+    Result,
+    transfers::{Downloads, Uploads},
+};
 use lan_mesh::{
-    DeviceId, FileChunkReader, FileId, GroupId, Message, MessageTarget, Session, SessionEvent,
+    DeviceId, FileId, GroupId, Message, MessageId, MessageTarget, Session, SessionEvent,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
-use tokio::{sync::broadcast::error::RecvError, task::JoinHandle};
+use tokio::{sync::Mutex, task::JoinHandle};
 
 pub(crate) type EventSink = Arc<dyn Fn(Value) -> Result<()> + Send + Sync>;
 
@@ -14,6 +17,7 @@ pub(crate) struct OpenGroup {
     group_id: GroupId,
     device_id: DeviceId,
     address: SocketAddr,
+    cache: PathBuf,
     nickname: String,
 }
 
@@ -23,24 +27,71 @@ pub(crate) struct Client {
     nickname: String,
     emit: EventSink,
     events: JoinHandle<()>,
+    uploads: Arc<Uploads>,
+    downloads: Arc<Mutex<Downloads>>,
 }
 
 impl Client {
     pub async fn open(options: OpenGroup, emit: EventSink) -> Result<Self> {
-        let session = Session::leaf(options.device_id, options.group_id);
-        let mut receiver = session.subscribe();
+        let directory = Arc::new(
+            tempfile::Builder::new()
+                .prefix("mesh-")
+                .tempdir_in(&options.cache)?,
+        );
+        let uploads = Arc::new(Uploads::new(
+            directory.clone(),
+            options.group_id,
+            options.nickname.clone(),
+        ));
+        let downloads = Arc::new(Mutex::new(Downloads::new(directory)));
+        let (session, mut receiver) = Session::leaf_with_inbox(options.device_id, options.group_id);
         let sink = emit.clone();
         let leaf = session.clone();
+        let incoming = downloads.clone();
+        let outgoing = uploads.clone();
+        let group = options.group_id;
         let events = tokio::spawn(async move {
-            loop {
-                let event = match receiver.recv().await {
-                    Ok(SessionEvent::NeighborOnline { .. }) => {
+            while let Some(event) = receiver.recv().await {
+                let event = match event {
+                    SessionEvent::NeighborOnline { .. } => {
+                        let requests = incoming.lock().await.resume(group, leaf.device_id(), None);
+                        for request in requests {
+                            let _ = leaf.write_leaf_message(request).await;
+                        }
                         json!({"type":"connection","online":true})
                     }
-                    Ok(SessionEvent::NeighborOffline { .. }) => {
+                    SessionEvent::NeighborOffline { .. } => {
+                        let _ = incoming.lock().await.offline(&sink);
                         json!({"type":"connection","online":false})
                     }
-                    Ok(SessionEvent::MessageReceived { message, .. }) => match message {
+                    SessionEvent::MessageReceived { message, .. } => match message {
+                        Message::FileChunk { header, payload }
+                            if addressed_to(&header.target, leaf.device_id())
+                                && header.source_device_id != leaf.device_id() =>
+                        {
+                            if let Err(e) = incoming
+                                .lock()
+                                .await
+                                .chunk(group, &leaf, &sink, &header, &payload)
+                                .await
+                            {
+                                let _ = sink(
+                                    json!({"type":"warning","text":format!("接收文件失败：{e}")}),
+                                );
+                            }
+                            continue;
+                        }
+                        Message::FileResumeRequest { header, payload } if matches!(header.target, MessageTarget::Device { device_id } if device_id == leaf.device_id()) =>
+                        {
+                            if let Err(e) = outgoing
+                                .resend(&leaf, header.source_device_id, payload)
+                                .await
+                            {
+                                let _ =
+                                    sink(json!({"type":"warning","text":format!("续传失败：{e}")}));
+                            }
+                            continue;
+                        }
                         Message::Text { header, payload }
                             if addressed_to(&header.target, leaf.device_id())
                                 && header.source_device_id != leaf.device_id() =>
@@ -54,10 +105,6 @@ impl Client {
                         Message::MemberChanged { .. } => json!({"type":"members"}),
                         _ => continue,
                     },
-                    Err(RecvError::Closed) => break,
-                    Err(RecvError::Lagged(_)) => {
-                        json!({"type":"warning","text":"接收队列已满，部分消息可能未收到"})
-                    }
                 };
                 if sink(event).is_err() {
                     break;
@@ -75,6 +122,8 @@ impl Client {
             nickname: options.nickname,
             emit,
             events,
+            uploads,
+            downloads,
         })
     }
 
@@ -111,33 +160,22 @@ impl Client {
         name: String,
         file_id: FileId,
     ) -> Result<Value> {
-        let target = peer.map_or(MessageTarget::Broadcast, |device_id| {
-            MessageTarget::Device { device_id }
-        });
-        let mut reader = FileChunkReader::open(
-            &path,
-            file_id,
-            self.group_id,
-            self.session.device_id(),
-            target,
-            8,
-        )
-        .await?
-        .with_file_name(name)
-        .with_sender_nickname(Some(self.nickname.clone()));
-        let count = reader.chunk_count();
-        let mut sent = 0u32;
-        let mut last_percent = 0;
-        while let Some(message) = reader.next_message().await? {
-            self.session.write_leaf_message(message).await?;
-            sent += 1;
-            let percent = u64::from(sent) * 100 / u64::from(count);
-            if percent != last_percent {
-                (self.emit)(json!({"type":"sent","id":file_id,"percent":percent}))?;
-                last_percent = percent;
-            }
-        }
+        self.uploads
+            .send(&self.session, &self.emit, peer, &path, name, file_id)
+            .await?;
         Ok(json!(file_id))
+    }
+
+    pub async fn resume(&self, row: MessageId) -> Result<Value> {
+        let requests =
+            self.downloads
+                .lock()
+                .await
+                .resume(self.group_id, self.session.device_id(), Some(row));
+        for request in requests {
+            self.session.write_leaf_message(request).await?;
+        }
+        Ok(Value::Null)
     }
 
     pub async fn close(&self) {
@@ -151,7 +189,7 @@ fn addressed_to(target: &MessageTarget, local: DeviceId) -> bool {
         || matches!(target, MessageTarget::Device { device_id } if *device_id == local)
 }
 
-fn direct_peer(target: &MessageTarget, source: DeviceId) -> Option<DeviceId> {
+pub(super) fn direct_peer(target: &MessageTarget, source: DeviceId) -> Option<DeviceId> {
     matches!(target, MessageTarget::Device { .. }).then_some(source)
 }
 

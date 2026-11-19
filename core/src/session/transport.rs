@@ -34,10 +34,12 @@ pub(super) async fn read_loop(
                     continue;
                 }
                 let _ = session.handle_received_message(neighbor_id, &message).await;
-                let _ = session.events.send(SessionEvent::MessageReceived {
-                    neighbor_id,
-                    message,
-                });
+                session
+                    .emit(SessionEvent::MessageReceived {
+                        neighbor_id,
+                        message,
+                    })
+                    .await;
             }
             Err(_) => {
                 session.remove_neighbor(neighbor_id).await;

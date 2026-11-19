@@ -171,6 +171,7 @@ struct SessionInner {
     reverse_routes: Mutex<HashMap<MessageId, ReverseRouteEntry>>,
     members: Mutex<HashMap<DeviceId, MemberEntry>>,
     events: broadcast::Sender<SessionEvent>,
+    inbox: Option<mpsc::Sender<SessionEvent>>,
     shutdown: tokio::sync::watch::Sender<bool>,
     leaf_reconnect_target: Mutex<Option<ReconnectTarget>>,
     reconnect_now: tokio::sync::Notify,
@@ -224,6 +225,7 @@ impl Session {
             group_id,
             DeviceRole::Leaf,
             ConnectionConfig::default(),
+            None,
         )
     }
 
@@ -239,7 +241,7 @@ impl Session {
         role: DeviceRole,
         config: ConnectionConfig,
     ) -> Self {
-        Self::build(device_id, group_id, role, config)
+        Self::build(device_id, group_id, role, config, None)
     }
 
     fn build(
@@ -247,6 +249,7 @@ impl Session {
         group_id: GroupId,
         role: DeviceRole,
         config: ConnectionConfig,
+        inbox: Option<mpsc::Sender<SessionEvent>>,
     ) -> Self {
         let (events, _) = broadcast::channel(256);
         let (shutdown, _) = tokio::sync::watch::channel(false);
@@ -273,6 +276,7 @@ impl Session {
                 reverse_routes: Mutex::new(HashMap::new()),
                 members: Mutex::new(members),
                 events,
+                inbox,
                 shutdown,
                 leaf_reconnect_target: Mutex::new(None),
                 reconnect_now: tokio::sync::Notify::new(),
@@ -514,6 +518,13 @@ impl Session {
 }
 
 impl SessionInner {
+    async fn emit(&self, event: SessionEvent) {
+        if let Some(inbox) = &self.inbox {
+            let _ = inbox.send(event).await;
+        } else {
+            let _ = self.events.send(event);
+        }
+    }
     async fn register_neighbor(
         self: &Arc<Self>,
         stream: TcpStream,
@@ -553,10 +564,11 @@ impl SessionInner {
             },
         );
         drop(neighbors);
-        let _ = self.events.send(SessionEvent::NeighborOnline {
+        self.emit(SessionEvent::NeighborOnline {
             neighbor_id,
             peer_addr,
-        });
+        })
+        .await;
         let nickname = self
             .members
             .lock()
@@ -823,10 +835,11 @@ impl SessionInner {
             neighbor.read_handle.abort();
             neighbor.write_handle.abort();
             neighbor.heartbeat_handle.abort();
-            let _ = self.events.send(SessionEvent::NeighborOffline {
+            self.emit(SessionEvent::NeighborOffline {
                 neighbor_id,
                 peer_addr: neighbor.peer_addr,
-            });
+            })
+            .await;
             if let Some(device_id) = neighbor.device_id {
                 self.apply_member_change(device_id, MemberChange::Offline, None)
                     .await;

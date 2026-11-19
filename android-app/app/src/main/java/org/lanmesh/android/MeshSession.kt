@@ -59,14 +59,16 @@ internal class MeshSession private constructor(private val handle: Long) {
         Unit
     }
 
+    suspend fun resume(row: UUID) = withContext(Dispatchers.IO) { Native.call(handle, request("resume").put("row", row.toString()).toString()); Unit }
+
     suspend fun reconnect() = withContext(Dispatchers.IO) { Native.call(handle, request("reconnect").toString()); Unit }
     suspend fun close() = withContext(Dispatchers.IO) { Native.close(handle) }
 
     companion object {
         private fun request(type: String) = JSONObject().put("type", type)
 
-        suspend fun open(config: GroupConfig, listener: MeshListener): MeshSession =
-            withContext(Dispatchers.IO) { MeshSession(Native.open(config.json().toString(), listener)) }
+        suspend fun open(config: GroupConfig, cache: File, listener: MeshListener): MeshSession =
+            withContext(Dispatchers.IO) { MeshSession(Native.open(config.json().put("cache", cache.absolutePath).toString(), listener)) }
 
         suspend fun discover(): List<FoundRelay> = withContext(Dispatchers.IO) {
             val rows = JSONArray(Native.call(0, request("discover").toString()))

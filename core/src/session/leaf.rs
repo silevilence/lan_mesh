@@ -1,6 +1,25 @@
 use super::*;
 
 impl Session {
+    /// A bounded inbox applies TCP backpressure while storing files.
+    /// This session delivers events through the returned receiver.
+    pub fn leaf_with_inbox(
+        device: DeviceId,
+        group: GroupId,
+    ) -> (Self, mpsc::Receiver<SessionEvent>) {
+        let (tx, rx) = mpsc::channel(32);
+        (
+            Self::build(
+                device,
+                group,
+                DeviceRole::Leaf,
+                ConnectionConfig::default(),
+                Some(tx),
+            ),
+            rx,
+        )
+    }
+
     /// Identify the group advertised in the relay's first normal protocol frame.
     pub async fn probe_group(peer: SocketAddr) -> Result<GroupId, NetworkError> {
         let (_, group) = identified_stream(peer).await?;

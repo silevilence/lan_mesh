@@ -1,5 +1,6 @@
 //! JNI entry points for the Android Leaf client.
 mod client;
+mod transfers;
 
 use client::{Client, EventSink, OpenGroup};
 use jni::{
@@ -47,6 +48,9 @@ enum Command {
         path: PathBuf,
         name: String,
         file_id: FileId,
+    },
+    Resume {
+        row: lan_mesh::MessageId,
     },
     Reconnect,
 }
@@ -144,6 +148,7 @@ async fn execute(handle: i64, command: Command) -> Result<Value> {
             name,
             file_id,
         } => client.send_file(peer, path, name, file_id).await,
+        Command::Resume { row } => client.resume(row).await,
         Command::Reconnect => {
             client.session.reconnect_leaf().await?;
             Ok(Value::Null)

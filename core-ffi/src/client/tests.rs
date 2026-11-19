@@ -22,6 +22,7 @@ async fn leaf_joins_announced_group_and_sends_to_its_only_relay() {
             group_id: group,
             device_id: local,
             address,
+            cache: std::env::temp_dir(),
             nickname: "Android".into(),
         },
         Arc::new(move |v| {
